@@ -221,10 +221,6 @@ export function AccountDrawer({ editor, onClose }: { readonly editor: AccountEdi
 
         {provider ? (
           <section className="form__section" aria-labelledby={`${formId}-credentials`}>
-            {provider.id === "dots" && editor.mode === "create" ? <Notice title="기기 코드로 연결">
-              라벨만 입력하고 저장한 뒤 계정 목록의 로그인에서 기기 인증과 기존 Dot 선택을 진행하세요.
-              직접 토큰을 입력하는 방식도 사용할 수 있습니다.
-            </Notice> : null}
             <div className="form__section-head">
               <h3 className="form__section-title" id={`${formId}-credentials`}>
                 자격 증명

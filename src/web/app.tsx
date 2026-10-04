@@ -5,7 +5,7 @@ import type { Account } from "../contracts";
 import { ToastRegion } from "./components/toast-region";
 import { Button, IconButton, Notice } from "./components/ui";
 import { ConsoleActionsContext } from "./lib/actions";
-import type { AccountEditor, ConsoleActions } from "./lib/actions";
+import type { ConsoleActions, EditorState } from "./lib/actions";
 import { cx } from "./lib/format";
 import { routeHref, useRoute } from "./lib/router";
 import type { Route, View } from "./lib/router";
@@ -15,6 +15,7 @@ import type { LiveState } from "./lib/store";
 import { AccountDrawer, DeleteAccountDialog } from "./views/account-dialogs";
 import { AccountsView } from "./views/accounts";
 import { ApiGuideView } from "./views/api-guide";
+import { DotsConnectDrawer } from "./views/dots-connect";
 import { JobsView } from "./views/jobs";
 import { OverviewView } from "./views/overview";
 
@@ -51,7 +52,7 @@ export function App() {
   const route = useRoute();
   const [theme, toggleTheme] = useTheme();
   const { providers, accounts, jobs, live, syncing } = useGateway();
-  const [editor, setEditor] = useState<AccountEditor | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);
   const lastView = useRef<View>(route.view);
 
@@ -66,7 +67,7 @@ export function App() {
 
   const actions = useMemo<ConsoleActions>(
     () => ({
-      openCreateAccount: (provider) => setEditor({ mode: "create", provider: provider ?? null }),
+      openCreateAccount: () => setEditor({ mode: "connect" }),
       openEditAccount: (account) => setEditor({ mode: "edit", account }),
       requestDeleteAccount: (account) => setDeleting(account),
     }),
@@ -164,7 +165,8 @@ export function App() {
           <ViewSwitch route={route} />
         </main>
       </div>
-      {editor ? <AccountDrawer editor={editor} onClose={() => setEditor(null)} /> : null}
+      {editor?.mode === "connect" ? <DotsConnectDrawer onClose={() => setEditor(null)} onManual={() => setEditor({ mode: "create", provider: "dots" })} /> : null}
+      {editor && editor.mode !== "connect" ? <AccountDrawer editor={editor} onClose={() => setEditor(null)} /> : null}
       {deleting ? <DeleteAccountDialog account={deleting} onClose={() => setDeleting(null)} /> : null}
       <ToastRegion />
     </ConsoleActionsContext>

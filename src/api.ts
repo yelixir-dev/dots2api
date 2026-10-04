@@ -11,7 +11,7 @@ import type { DotsAuth } from "./dots-auth";
 
 const credentials = z.record(z.string().max(100), z.string().max(100_000));
 const createAccount = z.object({ provider: providerIdSchema, label: z.string().trim().min(1).max(80), credentials: credentials.default({}) });
-const patchAccount = z.object({ label: z.string().trim().min(1).max(80).optional(), enabled: z.boolean().optional(), credentials: credentials.optional() });
+const patchAccount = z.object({ label: z.string().trim().min(1).max(80).optional(), enabled: z.boolean().optional(), chatEnabled: z.boolean().optional(), imageEnabled: z.boolean().optional(), credentials: credentials.optional() });
 const jobInput = z.object({ accountId: accountIdSchema.optional(), provider: providerIdSchema.optional(), prompt: z.string().trim().min(1).max(4_000_000) })
   .refine((value) => value.accountId || value.provider, "Choose an account or provider.");
 const chatInput = chatBridgeInputSchema.extend({
@@ -66,9 +66,12 @@ export function createApi(gateway: Gateway, dotsAuth?: DotsAuth): Hono {
   });
   app.patch("/api/accounts/:id", async (c) => {
     const body = patchAccount.parse(await c.req.json());
+    const chatEnabled = body.chatEnabled ?? body.enabled;
+    const imageEnabled = body.imageEnabled ?? body.enabled;
     const patch = {
       ...(body.label === undefined ? {} : { label: body.label }),
-      ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+      ...(chatEnabled === undefined ? {} : { chatEnabled }),
+      ...(imageEnabled === undefined ? {} : { imageEnabled }),
       ...(body.credentials === undefined ? {} : { credentials: body.credentials }),
     };
     return c.json({ account: gateway.update(accountIdSchema.parse(c.req.param("id")), patch) });

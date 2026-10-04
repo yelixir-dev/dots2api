@@ -38,7 +38,7 @@ export function attachImageGeneration(app: Hono, gateway: Gateway): void {
     let first: { width?: number | undefined; height?: number | undefined } = {};
     let failure: GatewayError | undefined;
     for (let index = 0; index < body.n; index++) {
-      const job: Job = gateway.submit({ provider: "dots", prompt });
+      const job: Job = gateway.submit({ provider: "dots", capability: "image", prompt });
       jobIds.push(job.id);
       const result = await gateway.wait(job.id);
       if (result.status !== "completed") {

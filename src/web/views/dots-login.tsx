@@ -4,6 +4,7 @@ import { Drawer } from "../components/dialog";
 import { Button, CodeBlock, Field, Notice } from "../components/ui";
 import { cancelDotsLogin, completeDotsLogin, startDotsLogin, toApiError } from "../lib/api";
 import type { DotsDevice } from "../lib/api";
+import { parseThreadId } from "../lib/format";
 import { gateway } from "../lib/store";
 
 export function DotsLoginDrawer({ account, onClose }: { readonly account: Account; readonly onClose: () => void }) {
@@ -26,8 +27,7 @@ export function DotsLoginDrawer({ account, onClose }: { readonly account: Accoun
     setBusy(true);
     setError(null);
     try {
-      const value = thread.trim();
-      const threadId = value.startsWith("https://chatgpt.com/dots/") ? new URL(value).pathname.split("/")[2] ?? "" : value;
+      const threadId = parseThreadId(thread);
       if (!threadId) { setError("기존 Dot ID 또는 주소를 입력하세요."); return; }
       const result = await completeDotsLogin(account.id, threadId);
       switch (result.status) {

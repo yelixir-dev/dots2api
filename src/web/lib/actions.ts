@@ -9,6 +9,8 @@ export type AccountEditor =
   | { readonly mode: "create"; readonly provider: ProviderId | null }
   | { readonly mode: "edit"; readonly account: Account };
 
+export type EditorState = AccountEditor | { readonly mode: "connect" };
+
 export interface ConsoleActions {
   readonly openCreateAccount: (provider?: ProviderId) => void;
   readonly openEditAccount: (account: Account) => void;

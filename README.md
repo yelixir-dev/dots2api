@@ -28,6 +28,7 @@
 - **Image generation.** `POST /v1/images/generations` with `dots-image` takes `prompt`, `n` (1–4), `size`, `quality` and `response_format` (`b64_json` or `url`); files are accepted as PNG, JPEG or WebP, judged by file signature and capped at 32 MiB each.
 - **Web console.** A React console on loopback with accounts, jobs, a job drawer with image preview, and an API guide that shows your local API key and an OmO `models.json` example.
 - **Device-code login.** You approve at `auth.openai.com/codex/device`, possibly from another computer; tokens stay on the server, encrypted with AES-256-GCM, and are refreshed 60 seconds before expiry.
+- **Per-feature switches.** Each account has separate **Chat** and **Image** toggles in the console, so one account can serve only chat, only images, or both; requests go only to accounts with the matching toggle on, and manual jobs follow the Chat toggle.
 - **One job per account.** A busy account answers `409 account_busy` and no usable account answers `503`, so concurrent requests never share a Dot thread.
 - **Loopback only.** The server binds `127.0.0.1` and the `/v1` endpoints require a Bearer API key.
 
@@ -73,11 +74,11 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 
 ### Connect a Dot
 
-1. In the console, open **Accounts → Add account**, choose Dots, enter a label and save.
-2. Start the device login on the account, open the shown ChatGPT link (`auth.openai.com/codex/device`) and approve the one-time code. The browser may be on a different computer from the server.
-3. Enter the **thread ID of an existing Dot** (the ID in `https://chatgpt.com/dots/<ID>`) to finish. dots2api never creates a thread and refuses to connect unless the thread reports `threadSource: aeon`.
+1. In the console, open **Accounts → Add account**, enter a label and the **existing Dot** (its address `https://chatgpt.com/dots/<ID>` or just the ID), and press **Start**. This creates the account and starts the device login in one step.
+2. Open the shown ChatGPT link (`auth.openai.com/codex/device`) and approve the one-time code. The browser may be on a different computer from the server. The console polls for the approval and finishes the connection by itself; no further click is needed.
+3. dots2api never creates a thread and refuses to connect unless the thread reports `threadSource: aeon`. If you cancel before it connects, the half-created account is removed.
 
-Tokens are never returned to the browser. If a refresh is revoked or its result is unknown, log in again. **Do not share the same refresh token with Codex CLI or anything else.** Entering an access token by hand also works but cannot refresh without a refresh token. The full contract is in [`src/dots-auth/README.md`](src/dots-auth/README.md).
+Tokens are never returned to the browser. If a refresh is revoked or its result is unknown, log in again. **Do not share the same refresh token with Codex CLI or anything else.** Entering an access token by hand (the link in the same dialog) also works but cannot refresh without a refresh token. An existing account can still be logged in again from its **Login** button. The full contract is in [`src/dots-auth/README.md`](src/dots-auth/README.md).
 
 ### Chat
 

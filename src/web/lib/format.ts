@@ -100,7 +100,7 @@ export interface AccountCounts {
   error: number;
   unconnected: number;
   busy: number;
-  /** Mirrors the gateway's job routing rule: enabled, ready and not busy. */
+  /** Mirrors the gateway's chat/manual job routing rule: chat enabled, ready and not busy. */
   available: number;
 }
 
@@ -109,7 +109,7 @@ export function countAccounts(accounts: readonly Account[]): AccountCounts {
   for (const account of accounts) {
     counts.total += 1;
     counts[account.status] += 1;
-    if (account.enabled) counts.enabled += 1;
+    if (account.chatEnabled || account.imageEnabled) counts.enabled += 1;
     else counts.disabled += 1;
     if (account.busy) counts.busy += 1;
     if (isAvailable(account)) counts.available += 1;
@@ -118,12 +118,12 @@ export function countAccounts(accounts: readonly Account[]): AccountCounts {
 }
 
 export function isAvailable(account: Account): boolean {
-  return account.enabled && account.status === "ready" && !account.busy;
+  return account.chatEnabled && account.status === "ready" && !account.busy;
 }
 
 export function availabilityLabel(account: Account): string {
   if (account.busy) return "작업 중";
-  if (!account.enabled) return "비활성";
+  if (!account.chatEnabled) return account.imageEnabled ? "채팅 비활성" : "비활성";
   return account.status === "ready" ? "작업 가능" : accountStatusLabel[account.status];
 }
 
@@ -131,4 +131,9 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function parseThreadId(input: string): string {
+  const value = input.trim();
+  return value.startsWith("https://chatgpt.com/dots/") ? new URL(value).pathname.split("/")[2] ?? "" : value;
 }
