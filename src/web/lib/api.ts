@@ -31,8 +31,7 @@ const accountSchema = z.object({
   id: accountIdSchema,
   provider: providerIdSchema,
   label: z.string(),
-  chatEnabled: z.boolean(),
-  imageEnabled: z.boolean(),
+  enabled: z.boolean(),
   status: z.enum(["unconnected", "ready", "error"]),
   detail: z.string(),
   createdAt: z.string(),
@@ -72,8 +71,7 @@ export interface AccountInput {
 /** Omitted keys are left unchanged by the server; blank credential fields must be omitted, never sent. */
 export interface AccountPatch {
   readonly label?: string;
-  readonly chatEnabled?: boolean;
-  readonly imageEnabled?: boolean;
+  readonly enabled?: boolean;
   readonly credentials?: Readonly<Record<string, string>>;
 }
 
@@ -120,8 +118,8 @@ const codeMessages: Readonly<Record<string, string>> = {
   account_busy: "계정이 다른 작업이나 연결 확인을 진행 중입니다. 끝난 뒤 다시 시도하세요.",
   account_not_found: "계정을 찾을 수 없습니다. 이미 삭제되었을 수 있습니다.",
   job_not_found: "작업을 찾을 수 없습니다.",
-  no_account: "이 공급자에 지금 쓸 수 있는 계정이 없습니다. 해당 기능이 켜져 있고 연결 확인을 마친 유휴 계정이 필요합니다.",
-  account_not_ready: "해당 기능을 켜고 연결 확인을 마친 뒤 작업을 보내세요.",
+  no_account: "이 공급자에 지금 쓸 수 있는 계정이 없습니다. 활성 상태이고 연결 확인을 마친 유휴 계정이 필요합니다.",
+  account_not_ready: "계정을 활성화하고 연결 확인을 마친 뒤 작업을 보내세요.",
   provider_mismatch: "계정과 공급자가 일치하지 않습니다.",
   internal_error: "서버 내부 오류가 발생했습니다.",
 };

@@ -28,7 +28,6 @@
 - **Image generation.** `POST /v1/images/generations` with `dots-image` takes `prompt`, `n` (1–4), `size`, `quality` and `response_format` (`b64_json` or `url`); files are accepted as PNG, JPEG or WebP, judged by file signature and capped at 32 MiB each.
 - **Web console.** A React console on loopback with accounts, jobs, a job drawer with image preview, and an API guide that shows your local API key and an OmO `models.json` example.
 - **Device-code login.** You approve at `auth.openai.com/codex/device`, possibly from another computer; tokens stay on the server, encrypted with AES-256-GCM, and are refreshed 60 seconds before expiry.
-- **Per-feature switches.** Each account has separate **Chat** and **Image** toggles in the console, so one account can serve only chat, only images, or both; requests go only to accounts with the matching toggle on, and manual jobs follow the Chat toggle.
 - **One job per account.** A busy account answers `409 account_busy` and no usable account answers `503`, so concurrent requests never share a Dot thread.
 - **Loopback only.** The server binds `127.0.0.1` and the `/v1` endpoints require a Bearer API key.
 
@@ -74,7 +73,7 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 
 ### Connect a Dot
 
-1. In the console, open **Accounts → Add account**, enter a label and the **existing Dot** (its address `https://chatgpt.com/dots/<ID>` or just the ID), and press **Start**. This creates the account and starts the device login in one step.
+1. In the console, open **Accounts → Add account**, enter a label and the **existing Dot** (open `https://chatgpt.com/dots`, open the Dot you want, and paste the address from the address bar, `https://chatgpt.com/dots/<ID>`; the bare ID also works), and press **Start**. This creates the account and starts the device login in one step.
 2. Open the shown ChatGPT link (`auth.openai.com/codex/device`) and approve the one-time code. The browser may be on a different computer from the server. The console polls for the approval and finishes the connection by itself; no further click is needed.
 3. dots2api never creates a thread and refuses to connect unless the thread reports `threadSource: aeon`. If you cancel before it connects, the half-created account is removed.
 

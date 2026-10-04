@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Account } from "../../contracts";
 import { Drawer } from "../components/dialog";
+import { DotAddressHint } from "../components/domain";
 import { Button, CodeBlock, Field, Notice } from "../components/ui";
 import { cancelDotsLogin, completeDotsLogin, startDotsLogin, toApiError } from "../lib/api";
 import type { DotsDevice } from "../lib/api";
@@ -71,7 +72,7 @@ export function DotsConnectDrawer({ onClose, onManual }: { readonly onClose: () 
     const trimmedLabel = label.trim();
     const threadId = parseThreadId(thread);
     const nextLabelError = !trimmedLabel ? "라벨을 입력하세요." : trimmedLabel.length > LABEL_MAX ? `${LABEL_MAX}자 이하로 입력하세요.` : null;
-    const nextThreadError = threadId ? null : "기존 Dot 주소 또는 ID를 입력하세요.";
+    const nextThreadError = threadId ? null : "Dot을 연 상태의 주소를 붙여넣어 주세요. 예: https://chatgpt.com/dots/…";
     setLabelError(nextLabelError);
     setThreadError(nextThreadError);
     if (nextLabelError || nextThreadError) return;
@@ -146,9 +147,9 @@ export function DotsConnectDrawer({ onClose, onManual }: { readonly onClose: () 
             />
           )}
         </Field>
-        <Field label="기존 Dot 주소 또는 ID" mark="required" error={threadError} hint="https://chatgpt.com/dots/…">
+        <Field label="기존 Dot 주소 또는 ID" mark="required" error={threadError} hint={<DotAddressHint />}>
           {(control) => (
-            <input {...control} className="input" value={thread} disabled={waiting} onChange={(event) => setThread(event.target.value)} autoComplete="off" />
+            <input {...control} className="input" value={thread} placeholder="https://chatgpt.com/dots/…" disabled={waiting} onChange={(event) => setThread(event.target.value)} autoComplete="off" />
           )}
         </Field>
         {device ? (

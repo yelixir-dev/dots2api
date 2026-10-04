@@ -8,15 +8,13 @@ export const jobIdSchema = z.string().uuid().brand<"JobId">();
 export type JobId = z.infer<typeof jobIdSchema>;
 export type Credentials = Readonly<Record<string, string>>;
 export type AccountStatus = "unconnected" | "ready" | "error";
-export type Capability = "chat" | "image";
 export type JobStatus = "running" | "completed" | "failed" | "unknown";
 
 export interface Account {
   readonly id: AccountId;
   readonly provider: ProviderId;
   readonly label: string;
-  readonly chatEnabled: boolean;
-  readonly imageEnabled: boolean;
+  readonly enabled: boolean;
   readonly status: AccountStatus;
   readonly detail: string;
   readonly createdAt: string;

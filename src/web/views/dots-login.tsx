@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Account } from "../../contracts";
 import { Drawer } from "../components/dialog";
+import { DotAddressHint } from "../components/domain";
 import { Button, CodeBlock, Field, Notice } from "../components/ui";
 import { cancelDotsLogin, completeDotsLogin, startDotsLogin, toApiError } from "../lib/api";
 import type { DotsDevice } from "../lib/api";
@@ -28,7 +29,7 @@ export function DotsLoginDrawer({ account, onClose }: { readonly account: Accoun
     setError(null);
     try {
       const threadId = parseThreadId(thread);
-      if (!threadId) { setError("기존 Dot ID 또는 주소를 입력하세요."); return; }
+      if (!threadId) { setError("Dot을 연 상태의 주소를 붙여넣어 주세요. 예: https://chatgpt.com/dots/…"); return; }
       const result = await completeDotsLogin(account.id, threadId);
       switch (result.status) {
         case "pending":
@@ -64,8 +65,8 @@ export function DotsLoginDrawer({ account, onClose }: { readonly account: Accoun
         ChatGPT 계정으로 기기 인증한 뒤 기존 Dot 주소를 입력하세요. 새 Astra 대화를 만들지 않으며,
         서버가 Aeon Dot인지 확인합니다. 기기 인증이 계정 설정에서 허용되어 있어야 합니다.
       </Notice>
-      <Field label="기존 Dot 주소 또는 ID" mark="required" hint="https://chatgpt.com/dots/…">
-        {(control) => <input {...control} className="input" value={thread} onChange={(event) => setThread(event.target.value)} autoComplete="off" />}
+      <Field label="기존 Dot 주소 또는 ID" mark="required" hint={<DotAddressHint />}>
+        {(control) => <input {...control} className="input" value={thread} placeholder="https://chatgpt.com/dots/…" onChange={(event) => setThread(event.target.value)} autoComplete="off" />}
       </Field>
       {device ? <>
         <a className="btn btn--primary" href={device.verificationUrl} target="_blank" rel="noopener noreferrer">ChatGPT 인증 열기</a>

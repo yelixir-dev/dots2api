@@ -73,3 +73,20 @@ test("does not overwrite an existing new database with an old one", () => {
   expect(store.apiKey).toBe(key);
   expect(existsSync(join(dir, "bot2api.sqlite"))).toBe(true);
 });
+
+test("reads accounts saved with split chat and image flags as a single enabled flag", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dots2api-migrate-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const seed = new Store(dir);
+  const ids = [false, true].map((chat, index) => {
+    const id = seed.createAccount("dots", `split-${index}`, {}).id;
+    const row = seed.db.query<{ body: string }, [string]>("SELECT body FROM accounts WHERE id=?").get(id);
+    const { enabled: _enabled, ...rest } = JSON.parse(row?.body ?? "{}");
+    seed.db.query("UPDATE accounts SET body=? WHERE id=?").run(JSON.stringify({ ...rest, chatEnabled: chat, imageEnabled: false }), id);
+    return id;
+  });
+  seed.close();
+  const store = new Store(dir);
+  cleanups.push(() => store.close());
+  expect(ids.map((id) => store.account(id as never)?.enabled)).toEqual([false, true]);
+});

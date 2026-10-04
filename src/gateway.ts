@@ -1,5 +1,5 @@
 import { GatewayError, jobIdSchema } from "./contracts";
-import type { Account, AccountId, Capability, Credentials, Job, JobId, ProviderAdapter, ProviderId } from "./contracts";
+import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId } from "./contracts";
 import { Store } from "./store";
 import type { DotsAuth } from "./dots-auth";
 
@@ -56,7 +56,7 @@ export class Gateway {
     this.changed();
     return account;
   }
-  update(id: AccountId, patch: { readonly label?: string; readonly chatEnabled?: boolean; readonly imageEnabled?: boolean; readonly credentials?: Credentials }): Account {
+  update(id: AccountId, patch: { readonly label?: string; readonly enabled?: boolean; readonly credentials?: Credentials }): Account {
     const account = this.account(id);
     if (account.busy) throw new GatewayError("account_busy", "Wait for the account's current operation.", 409);
     const previous = { ...this.store.credentials(id) };
@@ -66,8 +66,7 @@ export class Gateway {
       if ("accountId" in patch.credentials && !("accessToken" in patch.credentials)) delete previous["accessToken"];
     }
     const updated = this.store.saveAccount({
-      ...account, label: patch.label ?? account.label,
-      chatEnabled: patch.chatEnabled ?? account.chatEnabled, imageEnabled: patch.imageEnabled ?? account.imageEnabled,
+      ...account, label: patch.label ?? account.label, enabled: patch.enabled ?? account.enabled,
       ...(patch.credentials ? { status: "unconnected", detail: "Credentials changed. Check connection again.", checkedAt: null } as const : {}),
     }, patch.credentials ? { ...previous, ...patch.credentials } : undefined);
     this.changed();
@@ -106,18 +105,15 @@ export class Gateway {
       this.changed();
     }
   }
-  /** Manual jobs and chat run on chat-enabled accounts; image generation needs image-enabled ones. */
-  submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly capability?: Capability; readonly prompt: string }): Job {
-    const capability = input.capability ?? "chat";
-    const enabledFor = (a: Account): boolean => (capability === "image" ? a.imageEnabled : a.chatEnabled);
+  submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly prompt: string }): Job {
     const account = input.accountId
       ? this.account(input.accountId)
       : this.accounts()
-        .filter((a) => a.provider === input.provider && enabledFor(a) && a.status === "ready" && !a.busy)
+        .filter((a) => a.provider === input.provider && a.enabled && a.status === "ready" && !a.busy)
         .sort((a, b) => (a.lastUsedAt ?? "").localeCompare(b.lastUsedAt ?? ""))[0];
-    if (!account) throw new GatewayError("no_account", `No connected idle account with ${capability} enabled is available for this provider.`, 503);
+    if (!account) throw new GatewayError("no_account", "No connected idle account is available for this provider.", 503);
     if (input.provider && account.provider !== input.provider) throw new GatewayError("provider_mismatch", "Account and provider do not match.");
-    if (!enabledFor(account) || account.status !== "ready") throw new GatewayError("account_not_ready", `Enable ${capability} and check this account before submitting work.`, 409);
+    if (!account.enabled || account.status !== "ready") throw new GatewayError("account_not_ready", "Enable and check this account before submitting work.", 409);
     if (account.busy) throw new GatewayError("account_busy", "This account already has an active operation.", 409);
     this.adapters[account.provider].validate(this.store.credentials(account.id));
     const release = this.reserve(account.id);

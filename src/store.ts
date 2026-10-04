@@ -8,15 +8,13 @@ import type { Account, AccountId, Credentials, Job, JobId, JobImage, ProviderId,
 import { IMAGE_EXTENSIONS, IMAGE_MIMES, MAX_IMAGE_BYTES, MAX_IMAGES, pngSize, sniffImage } from "./images";
 
 const accountSchema = z.preprocess((raw) => {
-  if (typeof raw !== "object" || raw === null || !("enabled" in raw) || "chatEnabled" in raw) return raw;
-  const { enabled, ...rest } = raw;
-  return { ...rest, chatEnabled: enabled, imageEnabled: enabled };
+  if (typeof raw !== "object" || raw === null || "enabled" in raw || !("chatEnabled" in raw)) return raw;
+  return { ...raw, enabled: raw.chatEnabled === true || ("imageEnabled" in raw && raw.imageEnabled === true) };
 }, z.object({
   id: accountIdSchema,
   provider: providerIdSchema,
   label: z.string(),
-  chatEnabled: z.boolean(),
-  imageEnabled: z.boolean(),
+  enabled: z.boolean(),
   status: z.enum(["unconnected", "ready", "error"]),
   detail: z.string(),
   createdAt: z.string(),
@@ -138,7 +136,7 @@ export class Store {
   }
   createAccount(provider: ProviderId, label: string, credentials: Credentials): Account {
     const account: Account = {
-      id: accountIdSchema.parse(crypto.randomUUID()), provider, label, chatEnabled: true, imageEnabled: true,
+      id: accountIdSchema.parse(crypto.randomUUID()), provider, label, enabled: true,
       status: "unconnected", detail: "Connection has not been checked.",
       createdAt: new Date().toISOString(), checkedAt: null, lastUsedAt: null,
       hasCredentials: Object.keys(credentials).length > 0, busy: false,

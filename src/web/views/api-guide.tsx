@@ -195,7 +195,7 @@ function Guide({ settings, models, onReloadModels }: GuideProps) {
             <strong>응답 시간</strong> 원격 작업이 끝난 뒤 응답하며 최대 약 5분 걸릴 수 있습니다. 클라이언트 타임아웃을 넉넉하게 두세요.
           </li>
           <li>
-            <strong>계정 선택</strong> 해당 기능(채팅 또는 이미지)이 켜져 있고 준비됨·유휴인 Dot 계정 중 가장 오래 쉰 계정이 실행합니다. 없으면 503(no_account)입니다.
+            <strong>계정 선택</strong> 활성·준비됨·유휴 Dot 계정 중 가장 오래 쉰 계정이 실행합니다. 없으면 503(no_account)입니다.
           </li>
           <li>
             <strong>이미지 생성</strong> POST /v1/images/generations는 Dot에게 이미지를 만들어 달라고 요청한 뒤 받은 PNG를 b64_json 또는 url로 돌려줍니다. n은 1~4이며 한 장씩 차례로 만들어

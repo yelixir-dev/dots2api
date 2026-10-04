@@ -25,31 +25,31 @@ interface AccountRowProps {
 
 function AccountRow({ account, provider, contextWindow, contextBasis, checkStartedAt, now }: AccountRowProps) {
   const { openEditAccount, requestDeleteAccount } = useConsoleActions();
-  const [toggling, setToggling] = useState<"chatEnabled" | "imageEnabled" | null>(null);
+  const [toggling, setToggling] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const titleId = useId();
   const checking = checkStartedAt !== undefined;
   const lockedByServer = account.busy && !checking;
 
-  async function toggle(key: "chatEnabled" | "imageEnabled", enabled: boolean): Promise<void> {
-    setToggling(key);
+  async function toggle(enabled: boolean): Promise<void> {
+    setToggling(true);
     try {
-      await gateway.updateAccount(account.id, { [key]: enabled });
+      await gateway.updateAccount(account.id, { enabled });
     } catch (error) {
-      notify("danger", `‘${account.label}’ ${key === "chatEnabled" ? "채팅" : "이미지"} ${enabled ? "활성화" : "비활성화"}하지 못했습니다`, (await toApiError(error)).message);
+      notify("danger", `‘${account.label}’ ${enabled ? "활성화" : "비활성화"}하지 못했습니다`, (await toApiError(error)).message);
     } finally {
-      setToggling(null);
+      setToggling(false);
     }
   }
 
   return (
-    <article className={cx("account", !account.chatEnabled && !account.imageEnabled && "account--disabled")} aria-labelledby={titleId}>
+    <article className={cx("account", !account.enabled && "account--disabled")} aria-labelledby={titleId}>
       <div className="account__main">
         <div className="account__title-row">
           <h3 className="account__label" id={titleId}>
             {account.label}
           </h3>
-          {!account.chatEnabled && !account.imageEnabled ? <StatusBadge tone="neutral">비활성</StatusBadge> : null}
+          {!account.enabled ? <StatusBadge tone="neutral">비활성</StatusBadge> : null}
           {lockedByServer ? (
             <StatusBadge tone="accent" pulse>
               작업 중
@@ -95,20 +95,16 @@ function AccountRow({ account, provider, contextWindow, contextBasis, checkStart
         </p>
       </div>
       <div className="account__controls">
-        <div className="account__switches">
-          {([["chatEnabled", "채팅"], ["imageEnabled", "이미지"]] as const).map(([key, name]) => (
-            <div className="account__switch" key={key}>
-              <Switch
-                checked={account[key]}
-                label={`${account.label} ${name} 활성화`}
-                loading={toggling === key}
-                disabled={account.busy}
-                title={account.busy ? BUSY_TITLE : undefined}
-                onChange={(enabled) => void toggle(key, enabled)}
-              />
-              <span aria-hidden="true">{name} {account[key] ? "켜짐" : "꺼짐"}</span>
-            </div>
-          ))}
+        <div className="account__switch">
+          <Switch
+            checked={account.enabled}
+            label={`${account.label} 활성화`}
+            loading={toggling}
+            disabled={account.busy}
+            title={account.busy ? BUSY_TITLE : undefined}
+            onChange={(enabled) => void toggle(enabled)}
+          />
+          <span aria-hidden="true">{account.enabled ? "활성" : "비활성"}</span>
         </div>
         <div className="account__actions">
           <Button size="sm" icon={<LogIn aria-hidden="true" />} disabled={account.busy} onClick={() => setLoginOpen(true)}>
