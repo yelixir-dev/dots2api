@@ -14,11 +14,11 @@
 
 <!-- README-I18N:START -->
 
-**English** | [한국어](./README.ko.md)
+**English** | [中文](./README.zh.md) | [한국어](./README.ko.md)
 
 <!-- README-I18N:END -->
 
-**[dots2api](https://github.com/yelixir-dev/dots2api)** ("Dot to API") is a personal gateway that exposes your own OpenAI **Dot** as chat completions (tool calls included) and image generation, with a web console for accounts, job history and generated images. It serves two model IDs, **`dots-agent`** (chat) and **`dots-image`** (images). It was previously named bot2api and also covered Muse and Grok Bot; on 2026-10-04 it was narrowed to Dots only, and the Muse and Grok Bot code was removed.
+**[dots2api](https://github.com/yelixir-dev/dots2api)** ("Dot to API") is a personal gateway that exposes your own OpenAI **Dot** as chat completions (tool calls included) and image generation, with a web console for accounts, job history and generated images. It serves two model IDs, **`dots-agent`** (chat) and **`dots-image`** (images).
 
 [What it does](#what-it-does) · [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) · [Repository layout](#repository-layout) · [Current limitations](#current-limitations) · [License](#license)
 

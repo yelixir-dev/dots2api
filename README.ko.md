@@ -14,11 +14,11 @@
 
 <!-- README-I18N:START -->
 
-[English](./README.md) | **한국어**
+[English](./README.md) | [中文](./README.zh.md) | **한국어**
 
 <!-- README-I18N:END -->
 
-**[dots2api](https://github.com/yelixir-dev/dots2api)**("Dot to API")는 내 OpenAI **Dot**을 채팅(`chat/completions`, 도구 호출 포함)과 이미지 생성으로 열어 주는 개인용 게이트웨이이며, 계정·작업 기록·생성한 이미지를 관리하는 웹 콘솔이 함께 있습니다. 모델 ID는 **`dots-agent`**(채팅)와 **`dots-image`**(이미지) 두 가지입니다. 이전 이름은 bot2api였고 Muse와 Grok Bot까지 묶었지만, 2026-10-04에 Dots 하나에 집중하도록 축소해 Muse와 Grok Bot 코드는 제거했습니다.
+**[dots2api](https://github.com/yelixir-dev/dots2api)**("Dot to API")는 내 OpenAI **Dot**을 채팅(`chat/completions`, 도구 호출 포함)과 이미지 생성으로 열어 주는 개인용 게이트웨이이며, 계정·작업 기록·생성한 이미지를 관리하는 웹 콘솔이 함께 있습니다. 모델 ID는 **`dots-agent`**(채팅)와 **`dots-image`**(이미지) 두 가지입니다.
 
 [기능](#기능) · [설치](#설치) · [사용법](#사용법) · [동작 방식](#동작-방식) · [저장소 구조](#저장소-구조) · [현재 한계](#현재-한계) · [라이선스](#라이선스)
 
