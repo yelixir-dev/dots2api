@@ -1,0 +1,163 @@
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="dots2api — chat and image generation for your own Dot" width="880">
+</p>
+
+<p align="center">
+  <strong>Use your own OpenAI Dot through an OpenAI-compatible HTTP API on a personal server.</strong>
+</p>
+
+<p align="center">
+  <a href="package.json"><img src="https://img.shields.io/badge/version-0.1.0-b57920?style=flat-square" alt="Version 0.1.0"></a>
+  <a href="install.sh"><img src="https://img.shields.io/badge/Bun-1.3%2B-1f6f78?style=flat-square" alt="Bun 1.3+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-28231f?style=flat-square" alt="MIT License"></a>
+</p>
+
+<!-- README-I18N:START -->
+
+**English** | [한국어](./README.ko.md)
+
+<!-- README-I18N:END -->
+
+**[dots2api](https://github.com/yelixir-dev/dots2api)** ("Dot to API") is a personal gateway that exposes your own OpenAI **Dot** as chat completions (tool calls included) and image generation, with a web console for accounts, job history and generated images. It serves two model IDs, **`dots-agent`** (chat) and **`dots-image`** (images). It was previously named bot2api and also covered Muse and Grok Bot; on 2026-10-04 it was narrowed to Dots only, and the Muse and Grok Bot code was removed.
+
+[What it does](#what-it-does) · [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) · [Repository layout](#repository-layout) · [Current limitations](#current-limitations) · [License](#license)
+
+## What it does
+
+- **OpenAI-style chat.** `POST /v1/chat/completions` with `dots-agent`; `tools` and `tool_choice` work through a prompt-based JSON bridge, and the returned calls are executed by your client (for example OmO).
+- **Image generation.** `POST /v1/images/generations` with `dots-image` takes `prompt`, `n` (1–4), `size`, `quality` and `response_format` (`b64_json` or `url`); files are accepted as PNG, JPEG or WebP, judged by file signature and capped at 32 MiB each.
+- **Web console.** A React console on loopback with accounts, jobs, a job drawer with image preview, and an API guide that shows your local API key and an OmO `models.json` example.
+- **Device-code login.** You approve at `auth.openai.com/codex/device`, possibly from another computer; tokens stay on the server, encrypted with AES-256-GCM, and are refreshed 60 seconds before expiry.
+- **One job per account.** A busy account answers `409 account_busy` and no usable account answers `503`, so concurrent requests never share a Dot thread.
+- **Loopback only.** The server binds `127.0.0.1` and the `/v1` endpoints require a Bearer API key.
+
+## Install
+
+Requires Linux with user systemd and Bun 1.3 or later. The installer needs no root, builds nothing, and installs runtime dependencies only.
+
+```bash
+git clone https://github.com/yelixir-dev/dots2api.git
+cd dots2api
+./install.sh --port 3010
+```
+
+The installer copies the program to `~/.local/share/dots2api/app`, keeps data in `~/.local/share/dots2api/data`, and enables a user service named `dots2api`. Re-running it updates the program and restarts the service without touching data. On a server that you do not stay logged in to, run `sudo loginctl enable-linger "$USER"` once so the service keeps running.
+
+To run from the source checkout instead:
+
+```bash
+bun install
+bun run start
+```
+
+Open `http://127.0.0.1:3010`. `PORT` and `DOTS2API_DATA_DIR` change the port and the data directory.
+
+```bash
+PORT=3011 DOTS2API_DATA_DIR=/absolute/path/to/dots2api-data bun run start
+```
+
+On a remote (headless) server, forward the port from your own computer and open `http://127.0.0.1:3010` there.
+
+```bash
+ssh -N -L 3010:127.0.0.1:3010 user@server
+```
+
+### Data
+
+- `dots2api.sqlite`: account metadata, jobs and the local API key. An old `bot2api.sqlite` is moved to this name on first start, and its **Muse/Grok accounts, jobs, images and the `muse/` browser profile are deleted**.
+- `master.key`: the credential encryption key. Keep it together with the database or the accounts cannot be restored.
+- `images/`: generated images, with no automatic cleanup.
+- Prompts, results and images can be sensitive; do not share the data directory or put it in Git.
+
+## Usage
+
+### Connect a Dot
+
+1. In the console, open **Accounts → Add account**, choose Dots, enter a label and save.
+2. Start the device login on the account, open the shown ChatGPT link (`auth.openai.com/codex/device`) and approve the one-time code. The browser may be on a different computer from the server.
+3. Enter the **thread ID of an existing Dot** (the ID in `https://chatgpt.com/dots/<ID>`) to finish. dots2api never creates a thread and refuses to connect unless the thread reports `threadSource: aeon`.
+
+Tokens are never returned to the browser. If a refresh is revoked or its result is unknown, log in again. **Do not share the same refresh token with Codex CLI or anything else.** Entering an access token by hand also works but cannot refresh without a refresh token. The full contract is in [`src/dots-auth/README.md`](src/dots-auth/README.md).
+
+### Chat
+
+Read your API key in the console under **API guide**, then:
+
+```bash
+export DOTS2API_KEY='the key shown in the console'
+curl http://127.0.0.1:3010/v1/models -H "Authorization: Bearer $DOTS2API_KEY"
+```
+
+```bash
+curl http://127.0.0.1:3010/v1/chat/completions \
+  -H "Authorization: Bearer $DOTS2API_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"dots-agent","messages":[{"role":"user","content":"Introduce yourself in one line."}]}'
+```
+
+- The working context budget is **272,000 tokens**. It is a designated value, not a measurement, and it appears as `context_window` in `/v1/models`. Count output, system instructions and tool definitions against it.
+- Tool calls are a prompted JSON bridge, not a native tool API (`X-Dots2api-Tools: prompted`). `strict: true`, `response_format` and `/v1/responses` return 422. On 2026-10-04 this bridge completed the tool round trip 3 of 3 times, which is a small sample.
+- `stream: true` sends the finished result once as SSE (`X-Dots2api-Streaming: buffered`). Token counts are unknown, so no `usage` is produced (`X-Dots2api-Usage: unknown`), and `max_tokens` is advisory.
+- Every response carries `X-Dots2api-Job-Id`; look the job up with `GET /api/jobs/:id`.
+
+### Image generation
+
+```bash
+curl -sS http://127.0.0.1:3010/v1/images/generations \
+  -H "Authorization: Bearer $DOTS2API_KEY" -H 'Content-Type: application/json' \
+  -d '{"prompt":"a silver sports car on a beach, photorealistic, golden hour","size":"1536x1024","quality":"high"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > out.png
+```
+
+- Request: `prompt` (required), `n` (1–4, default 1), `size` (`auto`, `1024x1024`, `1536x1024`, `1024x1536`), `quality` (`auto`, `low`, `medium`, `high`), `response_format` (`b64_json` default, or `url`). Any other field returns 400.
+- Response: OpenAI-shaped `data[]` (`b64_json` or `url`, plus the `revised_prompt` the Dot actually used), `output_format: "png"` and the real `size`. A `url` points to `GET /api/jobs/:id/images/0` and **needs the API key**.
+- One image takes about a minute, and `n` images are made one after another in the same Dot thread. If the last ones fail, the finished images are returned and the `X-Dots2api-Images-Requested` and `X-Dots2api-Images-Returned` headers say how many.
+- Edits (`/v1/images/edits`) and variations are not supported.
+
+### Jobs API
+
+Send long work asynchronously with `POST /api/jobs {"provider":"dots","prompt":"..."}` and poll `GET /api/jobs/:id`. `GET /api/events` streams a `change` event over SSE when connection state changes.
+
+## How it works
+
+1. A client calls `/v1/...` with the Bearer key, or the console calls `/api/...` from the same origin.
+2. The gateway picks an enabled Dot account that is not already running a job.
+3. The Dots provider opens `wss://codex-cloud-backend.chatgpt.com` and speaks the app-server JSON-RPC that the Codex client uses, on your existing Aeon thread.
+4. The job and its state are persisted in SQLite.
+5. Chat output is returned as OpenAI JSON or SSE; images are checked by file signature and saved under `images/<job id>/`.
+6. A timeout or restart with an unknown remote outcome marks the job `unknown` and is never resent automatically.
+
+## Repository layout
+
+```text
+src/providers/dots.ts  Dot connection, turns, image receipt
+src/dots-auth/         device login and token refresh
+src/gateway.ts         account choice, per-account concurrency, job state
+src/store.ts           SQLite persistence and encryption
+src/api.ts             HTTP endpoints (src/images-api.ts for images)
+src/web/               React console (DESIGN.md is its design contract)
+```
+
+### Development
+
+```bash
+bun run dev
+bun run typecheck
+bun test
+```
+
+Tests use fixtures and never connect to a real Dot. Login, the tool round trip and image generation were checked separately with a real account on 2026-10-04, including opening more than 15 received PNG files, which does not guarantee later service changes or quota effects.
+
+## Current limitations
+
+- **Unofficial route.** Dots has no public model API. dots2api uses the app-server JSON-RPC of `wss://codex-cloud-backend.chatgpt.com` and sends `User-Agent` and `originator` headers that identify a Codex client. OpenAI can change or block this path, and terms or account restrictions are your risk to accept; if you cannot accept that, do not use it.
+- **Personal use only.** It is built for your own Dot account or a few of them, with no user separation, rate limits or billing, and it is not a vault against processes that can read local files. Do not serve other people or resell an account.
+- **Image settings are hints.** The Dot decides size and quality itself, so `size` and `quality` are only requested in words; observed sizes were 1254×1254 and 1536×1024. A text-only reply returns 502 (`image_not_generated`), and quota accounting for images is unverified, so check limits before generating in bulk.
+- **No usage numbers.** Chat is buffered rather than streamed token by token and reports no `usage`; Dot chats are said not to count toward ChatGPT limits, but deep-work limits exist.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+---
+
+<p align="center"><em>dots2api — a personal gateway for your own Dot.</em></p>

@@ -1,0 +1,14 @@
+node_modules/
+data/
+.env
+dist/
+*.log
+.DS_Store
+.omo/
+.senpi/
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+master.key
+worklog.html

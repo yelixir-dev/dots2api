@@ -1,0 +1,107 @@
+import { z } from "zod";
+
+export const providerIdSchema = z.enum(["dots"]);
+export type ProviderId = z.infer<typeof providerIdSchema>;
+export const accountIdSchema = z.string().uuid().brand<"AccountId">();
+export type AccountId = z.infer<typeof accountIdSchema>;
+export const jobIdSchema = z.string().uuid().brand<"JobId">();
+export type JobId = z.infer<typeof jobIdSchema>;
+export type Credentials = Readonly<Record<string, string>>;
+export type AccountStatus = "unconnected" | "ready" | "error";
+export type JobStatus = "running" | "completed" | "failed" | "unknown";
+
+export interface Account {
+  readonly id: AccountId;
+  readonly provider: ProviderId;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly status: AccountStatus;
+  readonly detail: string;
+  readonly createdAt: string;
+  readonly checkedAt: string | null;
+  readonly lastUsedAt: string | null;
+  readonly hasCredentials: boolean;
+  readonly busy: boolean;
+}
+/** A raster image produced by a remote agent and stored locally; fetched by index from the job. */
+export interface JobImage {
+  readonly mime: "image/png" | "image/jpeg" | "image/webp";
+  readonly bytes: number;
+  readonly width?: number | undefined;
+  readonly height?: number | undefined;
+  /** The prompt the remote agent actually used, when it reports one. */
+  readonly revisedPrompt?: string | undefined;
+}
+export interface RunImage {
+  readonly mime: JobImage["mime"];
+  readonly data: Uint8Array;
+  readonly revisedPrompt?: string;
+}
+export interface Job {
+  readonly id: JobId;
+  readonly accountId: AccountId;
+  readonly provider: ProviderId;
+  readonly prompt: string;
+  readonly status: JobStatus;
+  readonly output: string;
+  readonly error: string | null;
+  readonly remoteId: string | null;
+  readonly images: readonly JobImage[];
+  readonly createdAt: string;
+  readonly finishedAt: string | null;
+}
+export interface CredentialField {
+  readonly key: string;
+  readonly label: string;
+  readonly help: string;
+  readonly secret: boolean;
+  readonly required: boolean;
+  readonly multiline?: boolean;
+}
+export interface ProviderInfo {
+  readonly id: ProviderId;
+  readonly name: string;
+  readonly description: string;
+  readonly contextWindow: number;
+  readonly contextBasis: "configured" | "measured-heuristic";
+  readonly fields: readonly CredentialField[];
+  readonly capabilities: {
+    readonly nativeTools: false;
+    readonly usage: "unknown";
+    readonly execution: "remote-agent";
+  };
+  readonly setupUrl: string;
+}
+export interface CheckResult {
+  readonly detail: string;
+}
+export interface RunResult {
+  readonly text: string;
+  readonly remoteId: string | null;
+  readonly images?: readonly RunImage[];
+}
+export interface AdapterContext {
+  readonly accountId: AccountId;
+  readonly dataDir: string;
+  readonly signal: AbortSignal;
+  readonly onAccepted?: (remoteId: string | null) => void;
+}
+export interface ProviderAdapter {
+  readonly info: ProviderInfo;
+  /** Parse account configuration. Secrets are never returned by API reads. */
+  validate(credentials: Credentials): Credentials;
+  check(credentials: Credentials, context: AdapterContext): Promise<CheckResult>;
+  /** Never retry an accepted remote submission. Timeout must be reported as uncertain. */
+  run(credentials: Credentials, prompt: string, context: AdapterContext): Promise<RunResult>;
+}
+export class GatewayError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status = 400,
+    readonly uncertain = false,
+  ) {
+    super(message);
+    this.name = "GatewayError";
+  }
+}
