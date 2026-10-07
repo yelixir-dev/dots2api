@@ -2,6 +2,7 @@ import { z } from "zod";
 import { type AdapterContext, type Credentials, GatewayError, type ProviderAdapter, type RunImage } from "../contracts";
 import { decodeImage, MAX_IMAGES } from "../images";
 import { DotConnection } from "./dots/connection";
+import { runViaMessaging } from "./dots/messaging";
 
 const DEFAULT_ENDPOINT = "wss://codex-cloud-backend.chatgpt.com";
 const TIMEOUT_MS = 300_000;
@@ -12,7 +13,7 @@ const configurationSchema = z.object({
   endpoint: z.url().optional(),
 });
 const threadSchema = z.object({
-  thread: z.object({ id: z.string(), threadSource: z.string().optional() }),
+  thread: z.object({ id: z.string(), threadSource: z.string().optional(), canAcceptDirectInput: z.boolean().optional() }),
 });
 const turnSchema = z.object({
   turn: z.object({ id: z.string().min(1) }),
@@ -125,7 +126,7 @@ async function turnImages(connection: DotConnection, threadId: string, turnId: s
   });
 }
 
-async function existingThread(connection: DotConnection, threadId: string): Promise<void> {
+async function existingThread(connection: DotConnection, threadId: string): Promise<boolean> {
   const read = threadSchema.safeParse(await connection.request("thread/read", { threadId }));
   if (!read.success || read.data.thread.id !== threadId) {
     throw new GatewayError("dots_thread", "Existing Dot thread could not be verified.", 404);
@@ -136,6 +137,7 @@ async function existingThread(connection: DotConnection, threadId: string): Prom
   if (read.data.thread.threadSource !== "aeon") {
     throw new GatewayError("dots_thread", "Selected thread is not an Aeon Dot thread.", 400);
   }
+  return read.data.thread.canAcceptDirectInput !== false;
 }
 
 export const dotsAdapter: ProviderAdapter = {
@@ -168,8 +170,8 @@ export const dotsAdapter: ProviderAdapter = {
   async run(credentials, prompt, context) {
     const settings = config(credentials);
     if (!prompt.trim()) throw new GatewayError("dots_prompt", "Prompt must not be empty.");
-    return withConnection(settings, context, async (connection, submitted) => {
-      await existingThread(connection, settings.threadId);
+    const legacy = await withConnection(settings, context, async (connection, submitted) => {
+      if (!await existingThread(connection, settings.threadId)) return null;
       const resumed = threadSchema.safeParse(await connection.request("thread/resume", { threadId: settings.threadId }));
       if (!resumed.success || resumed.data.thread.id !== settings.threadId) {
         throw new GatewayError("dots_thread", "Dot did not resume the selected thread.", 502);
@@ -237,5 +239,6 @@ export const dotsAdapter: ProviderAdapter = {
         return { text, remoteId: turnId, ...(images.size ? { images: [...images.values()].slice(0, MAX_IMAGES) } : {}) };
       }
     });
+    return legacy ?? runViaMessaging(settings, prompt, context);
   },
 };
