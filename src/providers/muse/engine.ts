@@ -159,6 +159,35 @@ async function mediaBytesInPage(src: string): Promise<{ readonly ok: boolean; re
   }
 }
 
+/**
+ * Every job opens /thread/new, which Muse keeps as a persistent side chat titled after the prompt. When the operator
+ * opts in, the side chat this job just finished is deleted through Muse's own UI (⋯ → Delete → confirm). Deletion
+ * cannot be undone, so it is off by default and only touches the single row Muse marks as the open thread.
+ */
+export function pruneThreadsFromEnvironment(): boolean {
+  return process.env["DOTS2API_MUSE_PRUNE_THREADS"] === "1";
+}
+
+const PRUNE_STEP_TIMEOUT = 5_000;
+
+/** Deletes the side chat open on this page; false when it is not exactly one marked row or any step fails. */
+async function pruneCurrentThread(page: Page): Promise<boolean> {
+  const current = page.locator('[data-testid="hatch-thread-row"][aria-current="page"]');
+  if (await current.count() !== 1) return false;
+  try {
+    await current.hover({ timeout: PRUNE_STEP_TIMEOUT });
+    await current.locator('button[aria-label="More thread actions"]').click({ timeout: PRUNE_STEP_TIMEOUT });
+    await page.getByRole("menuitem", { name: "Delete", exact: true }).click({ timeout: PRUNE_STEP_TIMEOUT });
+    const confirm = page.getByRole("dialog").filter({ hasText: "Delete side chat?" });
+    await confirm.getByRole("button", { name: "Delete", exact: true }).click({ timeout: PRUNE_STEP_TIMEOUT });
+    await confirm.waitFor({ state: "detached", timeout: PRUNE_STEP_TIMEOUT });
+    return true;
+  } catch {
+    // The result is already captured; a leftover side chat must never fail the job.
+    return false;
+  }
+}
+
 function attachmentMime(reported: string | undefined): RunImage["mime"] {
   if (reported === "image/webp") return "image/webp";
   if (reported === "image/jpeg") return "image/jpeg";
@@ -166,7 +195,7 @@ function attachmentMime(reported: string | undefined): RunImage["mime"] {
 }
 
 /** The origin override permits a local synthetic Muse page in adapter tests. */
-export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_TIMEOUT): ProviderAdapter {
+export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_TIMEOUT, pruneThreads = false): ProviderAdapter {
   const origin = new URL(site);
 
   /**
@@ -338,6 +367,7 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
         const text = await page.locator('div[class*="hatch-agent-bubble-bg"]').last().innerText();
         if (!text.trim() && images.length === 0) throw new GatewayError("muse_result", "Muse finished without text or an image.", 502, true);
         const match = /^\/thread\/([^/]+)\/?$/.exec(new URL(page.url()).pathname);
+        if (pruneThreads) await pruneCurrentThread(page);
         return {
           text: text.trim(),
           remoteId: match?.[1] && match[1] !== "new" ? match[1] : null,

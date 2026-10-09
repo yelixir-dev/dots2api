@@ -10,6 +10,7 @@ const requestSchema = z.object({
   accountId: accountIdSchema,
   dataDir: z.string(),
   prompt: z.string(),
+  pruneThreads: z.boolean().default(false),
 });
 const buffers: Buffer[] = [];
 for await (const chunk of process.stdin) buffers.push(Buffer.from(chunk));
@@ -19,7 +20,7 @@ process.on("SIGTERM", abort);
 function emit(value: object): void { process.stdout.write(`${JSON.stringify(value)}\n`); }
 try {
   const input = requestSchema.parse(JSON.parse(Buffer.concat(buffers).toString("utf8")));
-  const adapter = createMuseAdapter(input.site, input.chatTimeout);
+  const adapter = createMuseAdapter(input.site, input.chatTimeout, input.pruneThreads);
   const context = {
     accountId: input.accountId, dataDir: input.dataDir, signal: controller.signal,
     onAccepted: (remoteId: string | null) => emit({ type: "accepted", remoteId }),

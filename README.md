@@ -96,6 +96,8 @@ Muse has no official OAuth app, so a Muse account is connected by signing into m
 
 Either way the renewed session cookies are written back to the account, and the Muse self-heal renews the session and wakes the workspace VM before every job.
 
+Every `muse-image` job opens a new Muse thread, which the Muse app keeps as a side chat titled after the prompt. Set `DOTS2API_MUSE_PRUNE_THREADS=1` in the service environment to delete that side chat after a job succeeds. Deletion cannot be undone, so it is off by default; it only deletes the one row Muse marks as the open thread, and a failed or uncertain job leaves its side chat in place.
+
 ### Chat
 
 Read your API key in the console under **API guide**, then:

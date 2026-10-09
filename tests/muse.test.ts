@@ -139,6 +139,110 @@ describe("Muse browser adapter", () => {
   });
 });
 
+// A thread page whose side-chat list holds the open thread plus another; deleting removes exactly the confirmed row.
+const threadsHtml = `<!doctype html><html><body>
+<nav>
+  <div data-testid="hatch-thread-row" role="button" data-title="Older chat">Older chat
+    <button aria-label="More thread actions">⋯</button></div>
+  <div data-testid="hatch-thread-row" role="button" data-title="Current">Current
+    <button aria-label="More thread actions">⋯</button></div>
+</nav>
+<div role="button" aria-label="Message Send"><textarea></textarea><button aria-label="Send" disabled>Send</button></div>
+<main role="log" aria-label="Chat messages"></main>
+<script>
+  const input = document.querySelector("textarea");
+  const send = document.querySelector('[aria-label="Send"]');
+  input.addEventListener("input", () => { send.disabled = !input.value; });
+  send.addEventListener("click", () => {
+    document.querySelector("main").innerHTML =
+      '<div class="hatch-chat-groupable-bubble chat-user-bubble">u</div><button aria-label="Stop">Stop</button>' +
+      '<div class="hatch-chat-groupable-bubble hatch-agent-bubble-bg"></div>';
+    queueMicrotask(() => {
+      document.querySelector(".hatch-agent-bubble-bg").textContent = "Done";
+      document.querySelector('[aria-label="Stop"]').remove();
+      history.replaceState(null, "", "/thread/side-1");
+      if (!input.value.includes("unmarked")) document.querySelector('[data-title="Current"]').setAttribute("aria-current", "page");
+    });
+  });
+  let target = null;
+  document.querySelectorAll('[aria-label="More thread actions"]').forEach((more) => more.addEventListener("click", () => {
+    target = more.closest('[data-testid="hatch-thread-row"]');
+    document.body.insertAdjacentHTML("beforeend", '<div role="menu"><div role="menuitem">Pin</div><div role="menuitem" id="del">Delete</div></div>');
+    document.getElementById("del").addEventListener("click", () => {
+      document.querySelector('[role="menu"]').remove();
+      document.body.insertAdjacentHTML("beforeend", '<div role="dialog"><p>Delete side chat?</p><button>Cancel</button><button id="ok">Delete</button></div>');
+      document.getElementById("ok").addEventListener("click", () => {
+        // Synchronous, so the server has recorded the deletion before the dialog closes and the browser can shut down.
+        const record = new XMLHttpRequest();
+        record.open("POST", "/deleted/" + encodeURIComponent(target.dataset.title), false);
+        record.send();
+        target.remove();
+        document.querySelector('[role="dialog"]').remove();
+      });
+    });
+  }));
+</script></body></html>`;
+
+describe("Muse side-chat pruning", () => {
+  let dataDir: string;
+  let server: ReturnType<typeof Bun.serve>;
+  let site: string;
+  const deleted: string[] = [];
+  const account = accountIdSchema.parse("44444444-4444-4444-8444-444444444444");
+  const context = () => ({ accountId: account, dataDir, signal: new AbortController().signal });
+
+  beforeAll(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "dots2api-muse-prune-"));
+    server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/api/session") return Response.json({ status: "assigned" });
+        if (path.startsWith("/deleted/")) { deleted.push(decodeURIComponent(path.slice("/deleted/".length))); return new Response("ok"); }
+        if (path === "/thread/new") return new Response(threadsHtml, { headers: { "content-type": "text/html" } });
+        return new Response("gone", { headers: { "content-type": "text/html" } });
+      },
+    });
+    site = `http://localhost:${server.port}`;
+    await createMuseAdapter(site, 2_000, false).check({ cookieHeader: "hatch_sess=valid" }, context());
+  });
+
+  afterAll(async () => {
+    server.stop(true);
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("leaves every side chat in place when pruning is off", async () => {
+    // Given pruning switched off.
+    deleted.length = 0;
+    // When a job completes.
+    const result = await createMuseAdapter(site, 2_000, false).run({}, "hello", context());
+    // Then the job succeeds and nothing is deleted.
+    expect(result).toEqual({ text: "Done", remoteId: "side-1" });
+    expect(deleted).toEqual([]);
+  }, 60_000);
+
+  it("deletes only the side chat this job opened when pruning is on", async () => {
+    // Given pruning switched on.
+    deleted.length = 0;
+    // When a job completes.
+    const result = await createMuseAdapter(site, 2_000, true).run({}, "hello", context());
+    // Then the result is unchanged and only the open thread's row was deleted, never the other chat.
+    expect(result).toEqual({ text: "Done", remoteId: "side-1" });
+    expect(deleted).toEqual(["Current"]);
+  }, 60_000);
+
+  it("deletes nothing when no row is marked as the open thread", async () => {
+    // Given pruning on but Muse never marking which row is the open thread.
+    deleted.length = 0;
+    // When a job completes.
+    const result = await createMuseAdapter(site, 2_000, true).run({}, "hello unmarked", context());
+    // Then the job still succeeds and no row is guessed at.
+    expect(result).toEqual({ text: "Done", remoteId: "side-1" });
+    expect(deleted).toEqual([]);
+  }, 60_000);
+});
+
 describe("Muse session self-heal", () => {
   let dataDir: string;
   let server: ReturnType<typeof Bun.serve>;

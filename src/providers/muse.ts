@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { GatewayError } from "../contracts";
 import type { AdapterContext, Credentials, ProviderAdapter, RunImage } from "../contracts";
-import { createMuseAdapter as createBrowserAdapter } from "./muse/engine";
+import { createMuseAdapter as createBrowserAdapter, pruneThreadsFromEnvironment } from "./muse/engine";
 
 const imageSchema = z.object({
   mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
@@ -52,10 +52,16 @@ function nodeBinary(): string {
   return node;
 }
 
+/** Fixed per adapter and sent to every worker over stdin; the worker never reads the gateway's environment. */
+interface WorkerSettings {
+  readonly site: string;
+  readonly chatTimeout: number;
+  readonly pruneThreads: boolean;
+}
+
 async function callWorker(
   operation: "check" | "run",
-  site: string,
-  chatTimeout: number,
+  settings: WorkerSettings,
   credentials: Credentials,
   prompt: string,
   context: AdapterContext,
@@ -65,7 +71,7 @@ async function callWorker(
   const child = Bun.spawn([node, "--input-type=module", "--eval", await workerProgram()], {
     cwd: fileURLToPath(new URL("../../", import.meta.url)),
     stdin: new Blob([JSON.stringify({
-      operation, site, chatTimeout, credentials, prompt, accountId: context.accountId, dataDir: context.dataDir,
+      operation, ...settings, credentials, prompt, accountId: context.accountId, dataDir: context.dataDir,
     })]),
     stdout: "pipe", stderr: "pipe",
   });
@@ -118,20 +124,21 @@ async function callWorker(
   }
 }
 
-export function createMuseAdapter(site = "https://muse.ai", chatTimeout = 300_000): ProviderAdapter {
+export function createMuseAdapter(site = "https://muse.ai", chatTimeout = 300_000, pruneThreads = pruneThreadsFromEnvironment()): ProviderAdapter {
   const definition = createBrowserAdapter(site, chatTimeout);
+  const settings: WorkerSettings = { site, chatTimeout, pruneThreads };
   return {
     info: definition.info,
     validate: definition.validate,
     async check(credentials, context) {
       definition.validate(credentials);
-      const result = await callWorker("check", site, chatTimeout, credentials, "", context);
+      const result = await callWorker("check", settings, credentials, "", context);
       if (result.type !== "checked") throw new GatewayError("muse_worker", "Unexpected Muse check result.", 502);
       return { detail: result.detail };
     },
     async run(credentials, prompt, context) {
       definition.validate(credentials);
-      const result = await callWorker("run", site, chatTimeout, credentials, prompt, context);
+      const result = await callWorker("run", settings, credentials, prompt, context);
       if (result.type !== "completed") throw new GatewayError("muse_worker", "Unexpected Muse job result.", 502, true);
       const images: RunImage[] = result.images.map((image) => ({
         mime: image.mime,
