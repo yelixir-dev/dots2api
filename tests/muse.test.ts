@@ -26,6 +26,13 @@ const html = `<!doctype html><html><body>
       location.href = "/gone";
       return;
     }
+    if (input.value === "once") {
+      if (!localStorage.getItem("dots2api-attempted")) {
+        localStorage.setItem("dots2api-attempted", "1");
+        location.href = "/gone";
+        return;
+      }
+    }
     if (input.value === "partial") document.querySelector('[aria-label="Stop"]').remove();
     queueMicrotask(() => {
       const agent = document.querySelector(".hatch-agent-bubble-bg");
@@ -116,9 +123,24 @@ describe("Muse browser adapter", () => {
     await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
     // When the submission loses its completion signal.
     const result = adapter.run({}, "disconnect", context);
-    // Then it cannot report a successful partial answer.
-    await expect(result).rejects.toMatchObject({ uncertain: true });
-  }, 60_000);
+    // Then it cannot report a successful partial answer, and it names the cause and the page it happened on.
+    const failure = await result.then(() => null, (error: unknown) => error);
+    expect(failure).toMatchObject({ uncertain: true });
+    expect((failure as Error).message).toContain("left the chat thread");
+    expect((failure as Error).message).toContain("/gone");
+  }, 90_000);
+
+  it("re-verifies the session and retries once when an attempt is uncertain", async () => {
+    // Given a signed-in account whose first submission loses its completion signal and whose page recovers afterwards.
+    const context = { accountId: accountA, dataDir, signal: new AbortController().signal };
+    await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
+    // When the job is submitted.
+    const result = await adapter.run({}, "once", context);
+    // Then the retry delivers the answer and the record says a retry happened instead of hiding it.
+    expect(result.remoteId).toBe("synthetic-123");
+    expect(result.text).toContain("[dots2api]");
+    expect(result.text).toContain("retried once");
+  }, 90_000);
 
   it("never returns partial text without a confirmed completion transition", async () => {
     // Given an authenticated thread with text but no observed Stop transition.

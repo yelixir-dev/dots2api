@@ -101,8 +101,14 @@ export interface ProviderAdapter {
   /** Parse account configuration. Secrets are never returned by API reads. */
   validate(credentials: Credentials): Credentials;
   check(credentials: Credentials, context: AdapterContext): Promise<CheckResult>;
-  /** Never retry an accepted remote submission. Timeout must be reported as uncertain. */
+  /** Never retry an accepted remote submission blindly. Timeout must be reported as uncertain. */
   run(credentials: Credentials, prompt: string, context: AdapterContext): Promise<RunResult>;
+  /**
+   * Optional automatic recovery, used after an uncertain failure. It re-establishes the remote session - the step a
+   * human performs by pressing Check - and must never submit work or touch an in-flight remote job. Declaring it lets
+   * a transient session problem heal without locking the account; an adapter without it keeps the plain quarantine.
+   */
+  reconnect?(credentials: Credentials, context: AdapterContext): Promise<CheckResult>;
 }
 export class GatewayError extends Error {
   constructor(

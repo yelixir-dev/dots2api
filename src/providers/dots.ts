@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type AdapterContext, type Credentials, GatewayError, type ProviderAdapter, type RunImage } from "../contracts";
+import { type AdapterContext, type CheckResult, type Credentials, GatewayError, type ProviderAdapter, type RunImage } from "../contracts";
 import { decodeImage, MAX_IMAGES } from "../images";
 import { DotConnection } from "./dots/connection";
 
@@ -185,6 +185,19 @@ async function provisionThread(
   return threadId;
 }
 
+/**
+ * One session check serves both the console's Check button and automatic recovery: a Dot that answers its own handshake
+ * is usable again, so a rejected, closed or unverifiable connection no longer quarantines the account until a human
+ * presses Check. It never submits work, so it can run after an uncertain job.
+ */
+async function sessionCheck(credentials: Credentials, context: AdapterContext): Promise<CheckResult> {
+  const settings = config(credentials);
+  return withConnection(settings, context, async (connection) => {
+    await existingThread(connection, settings.threadId, credentials["threadOrigin"] === "self");
+    return { detail: "Existing thread reports Aeon Dot identity; live compatibility and quota remain unverified." };
+  });
+}
+
 export const dotsAdapter: ProviderAdapter = {
   info: {
     id: "dots",
@@ -205,13 +218,8 @@ export const dotsAdapter: ProviderAdapter = {
     const settings = config(credentials);
     return { ...credentials, ...settings, endpoint: settings.endpoint ?? DEFAULT_ENDPOINT };
   },
-  async check(credentials, context) {
-    const settings = config(credentials);
-    return withConnection(settings, context, async (connection) => {
-      await existingThread(connection, settings.threadId, credentials["threadOrigin"] === "self");
-      return { detail: "Existing thread reports Aeon Dot identity; live compatibility and quota remain unverified." };
-    });
-  },
+  check: sessionCheck,
+  reconnect: sessionCheck,
   async run(credentials, prompt, context) {
     const settings = config(credentials);
     if (!prompt.trim()) throw new GatewayError("dots_prompt", "Prompt must not be empty.");

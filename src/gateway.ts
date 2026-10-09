@@ -116,6 +116,31 @@ export class Gateway {
       this.changed();
     }
   }
+  /**
+   * Automatic recovery after an uncertain failure: the provider re-verifies its own session (what the console's Check
+   * button does) so a transient remote problem does not quarantine the account until a human notices. Only adapters
+   * that declare `reconnect` participate, and a recovery that fails leaves the account in error exactly as before.
+   */
+  private async autoReconnect(id: AccountId): Promise<Account | null> {
+    const adapter = this.adapters[this.account(id).provider];
+    if (!adapter.reconnect) return null;
+    try {
+      const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(300_000)]);
+      const credentials = adapter.validate(await this.credentials(id, signal));
+      const result = await adapter.reconnect(credentials, {
+        accountId: id, dataDir: this.store.dataDir, signal,
+        saveCredentials: (repaired) => { this.store.saveAccount(this.account(id), repaired); },
+      });
+      return this.store.saveAccount({
+        ...this.account(id), status: "ready",
+        detail: `Connection re-verified automatically after an unconfirmed job. ${result.detail}`,
+        checkedAt: new Date().toISOString(),
+      });
+    } catch {
+      // The caller's quarantine is the honest outcome when the session cannot be re-verified.
+      return null;
+    }
+  }
   submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly prompt: string }): Job {
     const account = input.accountId
       ? this.account(input.accountId)
@@ -180,7 +205,10 @@ export class Gateway {
       const uncertain = !(error instanceof GatewayError) || error.uncertain;
       if (uncertain || (error instanceof GatewayError && (error.status === 401 || error.status === 403))) {
         const account = this.store.account(job.accountId);
-        if (account) this.store.saveAccount({
+        // Re-verify a session we can no longer trust before quarantining: an account that answers its own check is
+        // usable again, which is exactly the state a human would restore by hand.
+        const recovered = account && uncertain ? await this.autoReconnect(job.accountId) : null;
+        if (account && !recovered) this.store.saveAccount({
           ...account, status: "error",
           detail: uncertain
             ? "Remote work may still be active. Inspect it in the provider, then check this account before reuse."

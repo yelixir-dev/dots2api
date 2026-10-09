@@ -10,7 +10,7 @@ import { Store } from "../src/store";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
-function fixture(run: ProviderAdapter["run"] = async () => ({ text: "fixture result", remoteId: "remote-1" })) {
+function fixture(run: ProviderAdapter["run"] = async () => ({ text: "fixture result", remoteId: "remote-1" }), reconnect?: ProviderAdapter["reconnect"]) {
   const dir = mkdtempSync(join(tmpdir(), "dots2api-test-"));
   const store = new Store(dir);
   cleanups.push(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -22,6 +22,7 @@ function fixture(run: ProviderAdapter["run"] = async () => ({ text: "fixture res
       validate: (credentials) => credentials,
       check: async () => ({ detail: "Connected to fixture." }),
       run,
+      ...(reconnect ? { reconnect } : {}),
     };
   }
   const gateway = new Gateway(store, { dots: adapter("dots"), muse: adapter("muse") });
@@ -166,6 +167,45 @@ describe("account isolation and job state", () => {
     expect(result.remoteId).toBe("remote-known");
     expect(gateway.account(account.id).status).toBe("error");
     expect(() => gateway.submit({ provider: "dots", prompt: "retry" })).toThrow(GatewayError);
+  });
+  test("re-verifies a recoverable account instead of quarantining it after an uncertain job", async () => {
+    // Given a provider that can re-verify its own session through an adapter-declared reconnect.
+    let reconnects = 0;
+    const { gateway } = fixture(async (_credentials, _prompt, context) => {
+      context.onAccepted?.("remote-known");
+      throw new GatewayError("timeout", "Accepted work timed out.", 504, true);
+    }, async () => {
+      reconnects += 1;
+      return { detail: "Session re-verified." };
+    });
+    const account = gateway.create("muse", "Recoverable", {});
+    await gateway.check(account.id);
+    // When the gateway observes that failure.
+    const result = await gateway.wait(gateway.submit({ accountId: account.id, prompt: "work" }).id);
+    // Then the job is still honestly uncertain, but the account is usable again without a human pressing Check.
+    expect(result.status).toBe("unknown");
+    expect(reconnects).toBe(1);
+    expect(gateway.account(account.id).status).toBe("ready");
+    expect(gateway.account(account.id).detail).toContain("re-verified automatically");
+    const next = gateway.submit({ provider: "muse", prompt: "next" });
+    expect(next.status).toBe("running");
+    await gateway.wait(next.id);
+  });
+  test("keeps the quarantine when the session cannot be re-verified", async () => {
+    // Given a provider whose recovery check fails too.
+    const { gateway } = fixture(async () => {
+      throw new GatewayError("timeout", "Accepted work timed out.", 504, true);
+    }, async () => {
+      throw new GatewayError("muse_check", "Muse chat sign-in could not be confirmed.", 502);
+    });
+    const account = gateway.create("muse", "Unrecoverable", {});
+    await gateway.check(account.id);
+    // When the gateway observes that failure.
+    const result = await gateway.wait(gateway.submit({ accountId: account.id, prompt: "work" }).id);
+    // Then the account stays quarantined and more work is still refused.
+    expect(result.status).toBe("unknown");
+    expect(gateway.account(account.id).status).toBe("error");
+    expect(() => gateway.submit({ provider: "muse", prompt: "blocked" })).toThrow(GatewayError);
   });
   test("preserves existing credentials when only the label changes", () => {
     // Given an account with a saved secret.

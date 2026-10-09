@@ -153,6 +153,9 @@ cat > "$SERVICE_FILE" <<UNIT
 Description=dots2api OpenAI-compatible gateway for Dots
 After=network-online.target
 Wants=network-online.target
+# A crashed gateway must come back on its own: 0 removes systemd's default start-rate limit (5 starts / 10s), so the
+# service keeps restarting with the RestartSec pacing below instead of staying down after a short crash loop.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

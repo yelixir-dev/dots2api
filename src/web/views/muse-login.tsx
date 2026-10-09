@@ -11,6 +11,7 @@ import { notify } from "../lib/toast";
 
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 const LABEL_MAX = 80;
+const MAX_VIEWER_RETRIES = 5;
 const NAMED_KEYS = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
 
 function drawFrame(canvas: HTMLCanvasElement | null, data: string): void {
@@ -70,17 +71,44 @@ export function MuseLoginPanel({ account, autostart = false, onConnected, onClos
   useEffect(() => {
     if (!session) return;
     const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${scheme}://${window.location.host}/api/accounts/${encodeURIComponent(account.id)}/muse-login/stream`);
-    socketRef.current = socket;
-    // Keepalive: a static login page emits no frames, and an idle socket is closed by the server's idleTimeout.
-    const keepalive = setInterval(() => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: "ping" })); }, 20_000);
-    socket.onmessage = (event) => {
-      const message = JSON.parse(String(event.data)) as { t: string; d?: string; w?: number; h?: number };
-      if (message.t === "ready") sizeRef.current = { width: message.w ?? DEFAULT_SIZE.width, height: message.h ?? DEFAULT_SIZE.height };
-      else if (message.t === "frame" && message.d) drawFrame(canvasRef.current, message.d);
+    const url = `${scheme}://${window.location.host}/api/accounts/${encodeURIComponent(account.id)}/muse-login/stream`;
+    let socket: WebSocket | null = null;
+    let keepalive: ReturnType<typeof setInterval> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    let stopped = false;
+    const connect = (): void => {
+      socket = new WebSocket(url);
+      socketRef.current = socket;
+      socket.onmessage = (event) => {
+        const message = JSON.parse(String(event.data)) as { t: string; d?: string; w?: number; h?: number };
+        attempts = 0;
+        if (message.t === "ready") sizeRef.current = { width: message.w ?? DEFAULT_SIZE.width, height: message.h ?? DEFAULT_SIZE.height };
+        else if (message.t === "frame" && message.d) { setError((current) => (current === null ? current : null)); drawFrame(canvasRef.current, message.d); }
+      };
+      // A dropped socket is recovered in place: the server closes it on its idle timeout or a restart, and reconnecting
+      // keeps the running login session instead of making the user cancel and start over. Only a closed login session
+      // (1011) is terminal, because no reconnect can bring that back.
+      socket.onclose = (event) => {
+        if (stopped) return;
+        if (event.code === 1011) { setError("뷰어 세션이 끝났습니다. 세션을 취소하고 다시 시작하세요."); return; }
+        if (attempts >= MAX_VIEWER_RETRIES) { setError("뷰어 연결이 끊겼습니다. 세션을 취소하고 다시 시작하세요."); return; }
+        attempts += 1;
+        setError(`뷰어 연결이 끊겨 다시 연결하는 중입니다… (${attempts}/${MAX_VIEWER_RETRIES})`);
+        retryTimer = setTimeout(connect, Math.min(500 * 2 ** (attempts - 1), 4_000));
+      };
+      socket.onerror = () => { /* onclose reports the drop and schedules the reconnect. */ };
     };
-    socket.onerror = () => setError("뷰어 연결이 끊겼습니다. 세션을 취소하고 다시 시작하세요.");
-    return () => { clearInterval(keepalive); socket.close(); socketRef.current = null; };
+    connect();
+    // Keepalive: a static login page emits no frames, and an idle socket is closed by the server's idleTimeout.
+    keepalive = setInterval(() => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: "ping" })); }, 20_000);
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      clearInterval(keepalive);
+      socket?.close();
+      socketRef.current = null;
+    };
   }, [session, account.id]);
 
   function send(event: unknown): void {
@@ -136,8 +164,12 @@ export function MuseLoginPanel({ account, autostart = false, onConnected, onClos
   async function cancel(): Promise<void> {
     if (!session) return;
     setBusy(true);
-    try { await cancelMuseLogin(account.id, session.id); }
-    catch { notify("warn", "로그인 세션을 정리하지 못했습니다", "잠시 뒤 계정 상태를 다시 확인하세요."); }
+    try {
+      await cancelMuseLogin(account.id, session.id);
+      // Dropping the session stops the viewer socket and its reconnect loop, so the panel returns to its idle state.
+      setSession(null);
+      setError(null);
+    } catch { notify("warn", "로그인 세션을 정리하지 못했습니다", "잠시 뒤 계정 상태를 다시 확인하세요."); }
     finally { setBusy(false); }
   }
 

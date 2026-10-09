@@ -1,8 +1,34 @@
+import { appendFile, mkdir, stat, truncate } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { GatewayError } from "../contracts";
-import type { AdapterContext, Credentials, ProviderAdapter, RunImage } from "../contracts";
-import { createMuseAdapter as createBrowserAdapter, pruneThreadsFromEnvironment } from "./muse/engine";
+import type { AdapterContext, CheckResult, Credentials, ProviderAdapter, RunImage, RunResult } from "../contracts";
+import { createMuseAdapter as createBrowserAdapter, pruneThreadsFromEnvironment, sanitizeDiagnostics } from "./muse/engine";
+
+const MAX_ATTEMPTS = 2;
+const WORKER_LOG_LIMIT = 256 * 1024;
+const WORKER_LOG_TAIL = 2_000;
+/** Failures a second attempt cannot fix: the request or the account configuration is wrong, not the session. */
+const FATAL_CODES = new Set(["muse_cancelled", "muse_credentials", "muse_prompt"]);
+const RETRY_NOTE = "The first Muse attempt did not confirm completion; the account session was re-verified and the run was retried once.";
+
+/**
+ * Appends one bounded, credential-free line per worker run under `<dataDir>/logs`. A failure here must never surface as a
+ * job failure, and the file is trimmed before it can grow without bound.
+ */
+async function logWorkerRun(context: AdapterContext, line: string): Promise<void> {
+  try {
+    const directory = join(context.dataDir, "logs");
+    await mkdir(directory, { recursive: true });
+    const file = join(directory, "muse-worker.log");
+    const existing = await stat(file).catch(() => null);
+    if (existing && existing.size > WORKER_LOG_LIMIT) await truncate(file, 0);
+    await appendFile(file, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // Diagnostics are best-effort.
+  }
+}
 
 const imageSchema = z.object({
   mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
@@ -86,6 +112,7 @@ async function callWorker(
   const stderr = new Response(child.stderr).text();
   const reader = child.stdout.getReader();
   let terminal: Terminal | undefined;
+  let outcome = "the worker ended before confirming a result";
   let buffer = "";
   const decoder = new TextDecoder();
   try {
@@ -109,46 +136,84 @@ async function callWorker(
     const code = await child.exited;
     await stderr;
     if (code !== 0 || !terminal) throw new GatewayError("muse_worker", "Muse browser worker ended before confirming a result.", 502, operation === "run");
-    if (terminal.type === "failed") throw new GatewayError(terminal.code, terminal.message, terminal.status, terminal.uncertain);
+    if (terminal.type === "failed") {
+      outcome = `${terminal.code}: ${terminal.message}`;
+      throw new GatewayError(terminal.code, terminal.message, terminal.status, terminal.uncertain);
+    }
+    outcome = terminal.type === "completed" ? "completed" : "checked";
     return terminal;
   } catch (error) {
     if (error instanceof GatewayError) throw error;
+    outcome = "the worker response could not be verified";
     throw new GatewayError("muse_worker", "Muse worker response could not be verified.", 502, operation === "run");
   } finally {
     context.signal.removeEventListener("abort", abort);
     if (killTimer) clearTimeout(killTimer);
     if (child.exitCode === null) child.kill("SIGTERM");
     await child.exited;
-    await stderr;
+    const noise = (await stderr).trim();
     reader.releaseLock();
+    // Chrome diagnostics stay out of API responses, but a trimmed tail belongs in the operator's own log file.
+    const tail = noise && outcome !== "completed" && outcome !== "checked"
+      ? ` | chrome: ${sanitizeDiagnostics(noise.slice(-WORKER_LOG_TAIL))}`
+      : "";
+    await logWorkerRun(context, `op=${operation} outcome=${sanitizeDiagnostics(outcome)}${tail}`);
   }
 }
 
 export function createMuseAdapter(site = "https://muse.ai", chatTimeout = 300_000, pruneThreads = pruneThreadsFromEnvironment()): ProviderAdapter {
   const definition = createBrowserAdapter(site, chatTimeout);
   const settings: WorkerSettings = { site, chatTimeout, pruneThreads };
+  /** Re-verifies the account's session: the same work the console's Check button performs. */
+  const reconnect = async (credentials: Credentials, context: AdapterContext): Promise<CheckResult> => {
+    definition.validate(credentials);
+    const result = await callWorker("check", settings, credentials, "", context);
+    if (result.type !== "checked") throw new GatewayError("muse_worker", "Unexpected Muse check result.", 502);
+    return { detail: result.detail };
+  };
+  const runOnce = async (credentials: Credentials, prompt: string, context: AdapterContext): Promise<RunResult> => {
+    const result = await callWorker("run", settings, credentials, prompt, context);
+    if (result.type !== "completed") throw new GatewayError("muse_worker", "Unexpected Muse job result.", 502, true);
+    const images: RunImage[] = result.images.map((image) => ({
+      mime: image.mime,
+      data: new Uint8Array(Buffer.from(image.dataB64, "base64")),
+      ...(image.width !== undefined ? { width: image.width } : {}),
+      ...(image.height !== undefined ? { height: image.height } : {}),
+      ...(image.revisedPrompt !== undefined ? { revisedPrompt: image.revisedPrompt } : {}),
+    }));
+    return { text: result.text, remoteId: result.remoteId, ...(images.length ? { images } : {}) };
+  };
   return {
     info: definition.info,
     validate: definition.validate,
-    async check(credentials, context) {
-      definition.validate(credentials);
-      const result = await callWorker("check", settings, credentials, "", context);
-      if (result.type !== "checked") throw new GatewayError("muse_worker", "Unexpected Muse check result.", 502);
-      return { detail: result.detail };
-    },
+    check: reconnect,
+    /**
+     * Recovery around a failed attempt. Each attempt is a new worker process, a new browser and a new thread, so a dead
+     * browser or a lapsed session is exactly what a second attempt needs. The session is re-verified first, and only a
+     * session that answers its own check is retried: without that proof the retry would fail for the same reason and the
+     * original failure is reported unchanged. A submission cannot be cancelled remotely, so the abandoned thread may still
+     * finish on Muse; the job keeps only the delivered result and says that a retry happened.
+     */
     async run(credentials, prompt, context) {
       definition.validate(credentials);
-      const result = await callWorker("run", settings, credentials, prompt, context);
-      if (result.type !== "completed") throw new GatewayError("muse_worker", "Unexpected Muse job result.", 502, true);
-      const images: RunImage[] = result.images.map((image) => ({
-        mime: image.mime,
-        data: new Uint8Array(Buffer.from(image.dataB64, "base64")),
-        ...(image.width !== undefined ? { width: image.width } : {}),
-        ...(image.height !== undefined ? { height: image.height } : {}),
-        ...(image.revisedPrompt !== undefined ? { revisedPrompt: image.revisedPrompt } : {}),
-      }));
-      return { text: result.text, remoteId: result.remoteId, ...(images.length ? { images } : {}) };
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const result = await runOnce(credentials, prompt, context);
+          return attempt === 1 ? result : { ...result, text: `${result.text}\n\n[dots2api] ${RETRY_NOTE}`.trim() };
+        } catch (error) {
+          lastError = error;
+          if (!(error instanceof GatewayError) || context.signal.aborted || FATAL_CODES.has(error.code) || attempt === MAX_ATTEMPTS) break;
+          try {
+            await reconnect(credentials, context);
+          } catch {
+            break;
+          }
+        }
+      }
+      throw lastError;
     },
+    reconnect,
   };
 }
 export const museAdapter = createMuseAdapter();

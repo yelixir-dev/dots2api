@@ -33,6 +33,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
+const CAUSE_MAX = 240;
+/** Removes anything that could carry a credential out of a diagnostics string. */
+export function sanitizeDiagnostics(value: string): string {
+  return value
+    .replace(/\?[^\s"')]*/g, "?<redacted>")
+    .replace(/\b(cookie|authorization|token|bearer|password|secret|session|sess|hatch_[a-z_]+)[=:]\s*[^\s;,)"']+/gi, "$1=<redacted>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CAUSE_MAX);
+}
+/**
+ * A short, credential-free description of a browser failure, plus where the page stood when it happened. Without it an
+ * unconfirmed run reaches the job record as a single generic sentence and the real cause is lost: a failure at
+ * `/thread/new` (the submission never left home) reads very differently from one where the page left an open thread.
+ */
+function describeFailure(error: unknown, page: Page | undefined): string {
+  const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  // Playwright folds the page-side stack into the message; drop it so the cause and the page location survive trimming.
+  const head = (raw.split("\n")[0] ?? "").replace(/\s+at eval \(eval at[\s\S]*$/, "").slice(0, 160);
+  let location = "";
+  if (page) {
+    try {
+      const url = new URL(page.url());
+      location = ` at ${url.origin}${url.pathname}`;
+    } catch {
+      // A destroyed page has no readable URL; the error text still stands.
+    }
+  }
+  return sanitizeDiagnostics(`${head}${location}`);
+}
+
 /** Reads the assigned-session state; Muse renews its cookies on this same call. */
 async function readSession(page: Page, origin: URL): Promise<MuseSession | null> {
   const response = await page.request.get(new URL("/api/session", origin).href, { timeout: 15_000 });
@@ -300,15 +331,16 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
     async check(credentials, context) {
       const config = this.validate(credentials);
       const browser = await openBrowser(config, context, origin);
+      let page: Page | undefined;
       try {
-        const page = browser.pages()[0] ?? await browser.newPage();
+        page = browser.pages()[0] ?? await browser.newPage();
         await page.goto(new URL("/thread/new", origin).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
         await page.locator("textarea").first().waitFor({ state: "visible", timeout: config["login"] === "true" ? 120_000 : 20_000 });
         await ensureAssignedSession(page, browser, config, context);
         return { detail: "Signed in; Muse chat and assigned session confirmed." };
       } catch (error) {
         if (error instanceof GatewayError) throw error;
-        throw new GatewayError("muse_check", "Muse chat sign-in could not be confirmed; check the browser session and network.", 502);
+        throw new GatewayError("muse_check", `Muse chat sign-in could not be confirmed; check the browser session and network. (${describeFailure(error, page)})`, 502);
       } finally {
         await browser.close();
       }
@@ -318,8 +350,9 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
       if (!prompt.trim()) throw new GatewayError("muse_prompt", "Prompt must not be empty.");
       const browser = await openBrowser({ ...config, login: "false" }, context, origin);
       let submitted = false;
+      let page: Page | undefined;
       try {
-        const page = browser.pages()[0] ?? await browser.newPage();
+        page = browser.pages()[0] ?? await browser.newPage();
         await page.goto(new URL("/thread/new", origin).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
         const input = page.locator("textarea").first();
         await input.waitFor({ state: "visible", timeout: 20_000 });
@@ -378,9 +411,12 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
           if (!submitted || error.uncertain) throw error;
           throw new GatewayError(error.code, error.message, error.status, true);
         }
+        const cause = describeFailure(error, page);
         throw new GatewayError(
           submitted ? "muse_uncertain" : "muse_unavailable",
-          submitted ? "Muse submission may have succeeded, but completion was not confirmed." : "Muse chat was unavailable before submission.",
+          submitted
+            ? `Muse submission may have succeeded, but completion was not confirmed. (${cause})`
+            : `Muse chat was unavailable before submission. (${cause})`,
           502, submitted,
         );
       } finally {
