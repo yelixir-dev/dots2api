@@ -27,7 +27,7 @@
 - **OpenAI-style chat.** `POST /v1/chat/completions` with `dots-agent`; `tools` and `tool_choice` work through a prompt-based JSON bridge, and the returned calls are executed by your client (for example OmO).
 - **Image generation.** `POST /v1/images/generations` with `dots-image` or `muse-image` takes `prompt`, `n` (1–4), `size`, `quality` and `response_format` (`b64_json` or `url`); files are accepted as PNG, JPEG or WebP, judged by file signature and capped at 32 MiB each. `dots-image` runs on a Dot; `muse-image` generates through your own muse.ai account in an isolated Chrome profile (needs Node.js 22 or newer and Chromium) and usually returns WebP.
 - **Provider and account switches.** Every account has its own enable switch, and each provider (Dots, Muse) has a master switch that stops new jobs from routing to it without touching stored credentials.
-- **Self-healing.** A Dots account whose thread lost its agent rebinds to a fresh thread on its own; a Muse account whose session expired or whose cloud workspace VM slept renews the session and wakes the VM before running, so it recovers after a remote reset or a server reboot.
+- **Self-healing.** A Dots account whose thread lost its agent rebinds to a fresh thread on its own; a Muse account whose session expired or whose cloud workspace VM slept renews the session and wakes the VM before running, so it recovers after a remote reset or a server reboot. When a job ends unconfirmed, the gateway re-checks that account's session before taking it out of rotation and keeps it usable if the check passes; a Muse job is retried once only after such a re-check, and the job text says so (the first attempt may still finish on Muse).
 - **Web console.** A React console on loopback with accounts, jobs, a job drawer with image preview, and an API guide that shows your local API key and an OmO `models.json` example.
 - **Device-code login.** You approve at `auth.openai.com/codex/device`, possibly from another computer; tokens stay on the server, encrypted with AES-256-GCM, and are refreshed 60 seconds before expiry.
 - **One job per account.** A busy account answers `409 account_busy` and no usable account answers `503`, so concurrent requests never share a Dot thread.
@@ -69,6 +69,7 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 - `dots2api.sqlite`: account metadata, jobs and the local API key. An old `bot2api.sqlite` is moved to this name on first start, and its **Grok Bot accounts, jobs and images are deleted**; Muse and Dots data are kept.
 - `master.key`: the credential encryption key. Keep it together with the database or the accounts cannot be restored.
 - `images/`: generated images, with no automatic cleanup.
+- `logs/muse-worker.log`: one credential-free line per Muse worker run (outcome, and a trimmed browser error tail on failure), capped at 256 KiB.
 - Prompts, results and images can be sensitive; do not share the data directory or put it in Git.
 
 ## Usage

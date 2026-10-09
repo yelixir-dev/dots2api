@@ -27,7 +27,7 @@
 - **OpenAI 风格的聊天。** 用 `dots-agent` 调用 `POST /v1/chat/completions`；`tools` 和 `tool_choice` 通过基于提示词的 JSON 桥接工作，返回的调用由你的客户端（例如 OmO）执行。
 - **图像生成。** 用 `dots-image` 或 `muse-image` 调用 `POST /v1/images/generations`，接受 `prompt`、`n`（1–4）、`size`、`quality` 和 `response_format`（`b64_json` 或 `url`）；文件只接受 PNG、JPEG 或 WebP，按文件签名判断，每张不超过 32 MiB。`dots-image` 在 Dot 上运行，`muse-image` 通过你自己的 muse.ai 账号在隔离的 Chrome 配置文件中生成（需要 Node.js 22 或更高版本与 Chromium），通常返回 WebP。
 - **提供商与账号开关。** 每个账号都有自己的启用开关，每个提供商（Dots、Muse）还有一个总开关，在不改动已存凭据的情况下阻止新任务路由到它。
-- **自愈。** 丢失代理的 Dot 线程账号会自动重新绑定到新线程；muse.ai 会话过期或云端工作 VM 休眠的账号会在运行前续签会话并唤醒 VM，因此能在远端重置或服务器重启后自行恢复正常。
+- **自愈。** 丢失代理的 Dot 线程账号会自动重新绑定到新线程；muse.ai 会话过期或云端工作 VM 休眠的账号会在运行前续签会话并唤醒 VM，因此能在远端重置或服务器重启后自行恢复正常。任务以未确认状态结束时，网关会先重新检查该账号的会话再决定是否把它移出轮换，检查通过就继续可用；Muse 任务只在这样重新检查后重试一次，并在任务文本中注明（第一次尝试仍可能在 Muse 上完成）。
 - **Web 控制台。** 运行在回环地址上的 React 控制台，包含账号、任务、带图像预览的任务详情，以及显示本地 API 密钥和 OmO `models.json` 示例的 API 指南。
 - **设备码登录。** 在 `auth.openai.com/codex/device` 批准，可以在另一台电脑上完成；令牌只保存在服务器上，使用 AES-256-GCM 加密，并在到期前 60 秒刷新。
 - **每个账号同时只有一个任务。** 账号忙碌时返回 `409 account_busy`，没有可用账号时返回 `503`，因此并发请求不会共用同一个 Dot 线程。
@@ -69,6 +69,7 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 - `dots2api.sqlite`：账号元数据、任务和本地 API 密钥。如果存在旧的 `bot2api.sqlite`，首次启动时会改用这个名称，其中的 **Grok Bot 账号、任务、图像会被删除**；Muse 与 Dots 数据会保留。
 - `master.key`：凭据加密密钥。必须和数据库一起保管，否则无法恢复账号。
 - `images/`：生成的图像，不会自动清理。
+- `logs/muse-worker.log`：每次 Muse 工作进程运行记录一行不含凭据的信息（结果，失败时附截断的浏览器错误尾部），超过 256 KiB 时清空。
 - 提示词、结果和图像可能包含敏感内容；请不要共享数据目录，也不要放进 Git。
 
 ## 使用
