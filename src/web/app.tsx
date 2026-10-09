@@ -17,6 +17,7 @@ import { AccountsView } from "./views/accounts";
 import { ApiGuideView } from "./views/api-guide";
 import { DotsConnectDrawer } from "./views/dots-connect";
 import { JobsView } from "./views/jobs";
+import { MuseConnectDrawer } from "./views/muse-login";
 import { OverviewView } from "./views/overview";
 
 const NAV: ReadonlyArray<{ readonly view: View; readonly label: string; readonly Icon: LucideIcon; readonly target: Route }> = [
@@ -67,7 +68,12 @@ export function App() {
 
   const actions = useMemo<ConsoleActions>(
     () => ({
-      openCreateAccount: () => setEditor({ mode: "connect" }),
+      openCreateAccount: (provider) =>
+        provider === "dots"
+          ? setEditor({ mode: "connect" })
+          : provider === "muse"
+            ? setEditor({ mode: "muse-connect" })
+            : setEditor({ mode: "create", provider: provider ?? null }),
       openEditAccount: (account) => setEditor({ mode: "edit", account }),
       requestDeleteAccount: (account) => setDeleting(account),
     }),
@@ -166,7 +172,14 @@ export function App() {
         </main>
       </div>
       {editor?.mode === "connect" ? <DotsConnectDrawer onClose={() => setEditor(null)} onManual={() => setEditor({ mode: "create", provider: "dots" })} /> : null}
-      {editor && editor.mode !== "connect" ? <AccountDrawer editor={editor} onClose={() => setEditor(null)} /> : null}
+      {editor?.mode === "muse-connect" ? <MuseConnectDrawer onClose={() => setEditor(null)} /> : null}
+      {editor && editor.mode !== "connect" && editor.mode !== "muse-connect" ? (
+        <AccountDrawer
+          key={editor.mode === "edit" ? editor.account.id : `create:${editor.provider ?? "any"}`}
+          editor={editor}
+          onClose={() => setEditor(null)}
+        />
+      ) : null}
       {deleting ? <DeleteAccountDialog account={deleting} onClose={() => setDeleting(null)} /> : null}
       <ToastRegion />
     </ConsoleActionsContext>

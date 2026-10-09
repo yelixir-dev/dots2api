@@ -18,14 +18,16 @@
 
 <!-- README-I18N:END -->
 
-**[dots2api](https://github.com/yelixir-dev/dots2api)** ("Dot to API") is a personal gateway that exposes your own OpenAI **Dot** as chat completions (tool calls included) and image generation, with a web console for accounts, job history and generated images. It serves two model IDs, **`dots-agent`** (chat) and **`dots-image`** (images).
+**[dots2api](https://github.com/yelixir-dev/dots2api)** ("Dot to API") is a personal gateway that exposes your own OpenAI **Dot** as chat completions (tool calls included) and image generation, with a web console for accounts, job history and generated images. It serves **`dots-agent`** (chat) and two image models: **`dots-image`** (your Dot) and **`muse-image`** (your own muse.ai account).
 
 [What it does](#what-it-does) · [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) · [Repository layout](#repository-layout) · [Current limitations](#current-limitations) · [License](#license)
 
 ## What it does
 
 - **OpenAI-style chat.** `POST /v1/chat/completions` with `dots-agent`; `tools` and `tool_choice` work through a prompt-based JSON bridge, and the returned calls are executed by your client (for example OmO).
-- **Image generation.** `POST /v1/images/generations` with `dots-image` takes `prompt`, `n` (1–4), `size`, `quality` and `response_format` (`b64_json` or `url`); files are accepted as PNG, JPEG or WebP, judged by file signature and capped at 32 MiB each.
+- **Image generation.** `POST /v1/images/generations` with `dots-image` or `muse-image` takes `prompt`, `n` (1–4), `size`, `quality` and `response_format` (`b64_json` or `url`); files are accepted as PNG, JPEG or WebP, judged by file signature and capped at 32 MiB each. `dots-image` runs on a Dot; `muse-image` generates through your own muse.ai account in an isolated Chrome profile (needs Node.js 22 or newer and Chromium) and usually returns WebP.
+- **Provider and account switches.** Every account has its own enable switch, and each provider (Dots, Muse) has a master switch that stops new jobs from routing to it without touching stored credentials.
+- **Self-healing.** A Dots account whose thread lost its agent rebinds to a fresh thread on its own; a Muse account whose session expired or whose cloud workspace VM slept renews the session and wakes the VM before running, so it recovers after a remote reset or a server reboot.
 - **Web console.** A React console on loopback with accounts, jobs, a job drawer with image preview, and an API guide that shows your local API key and an OmO `models.json` example.
 - **Device-code login.** You approve at `auth.openai.com/codex/device`, possibly from another computer; tokens stay on the server, encrypted with AES-256-GCM, and are refreshed 60 seconds before expiry.
 - **One job per account.** A busy account answers `409 account_busy` and no usable account answers `503`, so concurrent requests never share a Dot thread.
@@ -64,7 +66,7 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 
 ### Data
 
-- `dots2api.sqlite`: account metadata, jobs and the local API key. An old `bot2api.sqlite` is moved to this name on first start, and its **Muse/Grok accounts, jobs, images and the `muse/` browser profile are deleted**.
+- `dots2api.sqlite`: account metadata, jobs and the local API key. An old `bot2api.sqlite` is moved to this name on first start, and its **Grok Bot accounts, jobs and images are deleted**; Muse and Dots data are kept.
 - `master.key`: the credential encryption key. Keep it together with the database or the accounts cannot be restored.
 - `images/`: generated images, with no automatic cleanup.
 - Prompts, results and images can be sensitive; do not share the data directory or put it in Git.
@@ -78,6 +80,21 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 3. dots2api never creates a thread and refuses to connect unless the thread reports `threadSource: aeon`. If you cancel before it connects, the half-created account is removed.
 
 Tokens are never returned to the browser. If a refresh is revoked or its result is unknown, log in again. **Do not share the same refresh token with Codex CLI or anything else.** Entering an access token by hand (the link in the same dialog) also works but cannot refresh without a refresh token. An existing account can still be logged in again from its **Login** button. The full contract is in [`src/dots-auth/README.md`](src/dots-auth/README.md).
+
+### Connect a Muse account
+
+Muse has no official OAuth app, so a Muse account is connected by signing into muse.ai and keeping that session. In the console, add a **Muse** account, then use one of:
+
+- **Remote browser (easiest, works on a headless server).** On the account, open **Login → 원격 브라우저 시작**. The server opens a real Chromium on a private virtual display (Xvfb) and streams it into the console, where you sign in with Google directly. Press **로그인 완료 및 연결 확인** when done. The viewer runs on the console's own port, so no extra SSH tunnel is needed.
+  On a fresh headless server (for example Oracle Cloud) install the two dependencies once, with root:
+  ```bash
+  sudo apt install -y xvfb        # Debian/Ubuntu; on Oracle Linux use: sudo dnf install -y xorg-x11-server-Xvfb
+  bunx playwright install --with-deps chromium
+  ```
+  `--with-deps` pulls Chromium's shared libraries. If `Xvfb` is not on the service's `PATH`, set it (or install it under `/usr/bin`); the launcher looks it up with `Bun.which("Xvfb")`.
+- **Cookie import.** Sign into muse.ai in your own browser, open DevTools → Network, pick a `muse.ai` request, and paste its `Cookie` request header into the account's **Cookie header** field (or an exported cookie JSON into **Cookies JSON**), then **Save and check**.
+
+Either way the renewed session cookies are written back to the account, and the Muse self-heal renews the session and wakes the workspace VM before every job.
 
 ### Chat
 

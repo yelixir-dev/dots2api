@@ -4,7 +4,11 @@ import { GatewayError } from "../../contracts";
 const responseSchema = z.object({
   id: z.number(),
   result: z.unknown().optional(),
-  error: z.object({ code: z.number(), message: z.string() }).optional(),
+  error: z.object({
+    code: z.number(),
+    message: z.string(),
+    data: z.object({ grpcStatusCode: z.number().optional() }).optional(),
+  }).optional(),
 });
 const notificationSchema = z.object({
   method: z.string(),
@@ -56,7 +60,14 @@ export class DotConnection {
         if (!pending) return;
         this.pending.delete(response.data.id);
         if (response.data.error) {
-          pending.reject(new GatewayError("dots_rpc", "Dot rejected an RPC request.", 502, uncertain()));
+          const { code, message } = response.data.error;
+          const missing = response.data.error.data?.grpcStatusCode === 5 || /thread not found/i.test(message);
+          pending.reject(new GatewayError(
+            missing ? "dots_thread_missing" : "dots_rpc",
+            `Dot rejected an RPC request (${code}): ${message}`,
+            502,
+            uncertain(),
+          ));
         } else if (response.data.result === undefined) {
           pending.reject(new GatewayError("dots_protocol", "Dot RPC response has no result.", 502, uncertain()));
         } else {

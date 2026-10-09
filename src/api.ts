@@ -6,7 +6,8 @@ import { accountIdSchema, GatewayError, jobIdSchema, providerIdSchema } from "./
 import type { Gateway } from "./gateway";
 import { chatBridgeInputSchema, prepareChatBridge, parseRemoteAssistant } from "./chat-bridge";
 import { attachDotsLogin } from "./dots-login-routes";
-import { attachImageGeneration, IMAGE_MODEL } from "./images-api";
+import { attachImageGeneration, IMAGE_MODELS } from "./images-api";
+import type { MuseLoginRoutes } from "./muse-login-routes";
 import type { DotsAuth } from "./dots-auth";
 
 const credentials = z.record(z.string().max(100), z.string().max(100_000));
@@ -26,7 +27,7 @@ function authorized(header: string | undefined, key: string): boolean {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
-export function createApi(gateway: Gateway, dotsAuth?: DotsAuth): Hono {
+export function createApi(gateway: Gateway, dotsAuth?: DotsAuth, museLogin?: MuseLoginRoutes): Hono {
   const app = new Hono();
   app.use("*", async (c, next) => {
     const url = new URL(c.req.url);
@@ -57,8 +58,15 @@ export function createApi(gateway: Gateway, dotsAuth?: DotsAuth): Hono {
     if (error instanceof SyntaxError) return c.json({ error: { message: "Invalid JSON.", code: "invalid_json" } }, 400);
     return c.json({ error: { message: "Internal operation failed.", code: "internal_error" } }, 500);
   });
-  app.get("/api/providers", (c) => c.json({ providers: Object.values(gateway.adapters).map((a) => a.info) }));
+  app.get("/api/providers", (c) => c.json({ providers: gateway.providerStatuses() }));
+  app.patch("/api/providers/:id", async (c) => {
+    const id = providerIdSchema.parse(c.req.param("id"));
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(await c.req.json());
+    gateway.setProviderEnabled(id, enabled);
+    return c.json({ provider: gateway.providerStatuses().find((provider) => provider.id === id) });
+  });
   if (dotsAuth) attachDotsLogin(app, gateway, dotsAuth);
+  museLogin?.attach(app);
   app.get("/api/accounts", (c) => c.json({ accounts: gateway.accounts() }));
   app.post("/api/accounts", async (c) => {
     const body = createAccount.parse(await c.req.json());
@@ -135,12 +143,12 @@ export function createApi(gateway: Gateway, dotsAuth?: DotsAuth): Hono {
   app.get("/v1/models", (c) => c.json({
     object: "list",
     data: [
-      ...Object.values(gateway.adapters).map((a) => ({
+      ...Object.values(gateway.adapters).filter((a) => a.info.capabilities.chat).map((a) => ({
         id: `${a.info.id}-agent`, object: "model", owned_by: a.info.id,
         context_window: a.info.contextWindow, context_basis: a.info.contextBasis,
         capabilities: a.info.capabilities,
       })),
-      { id: IMAGE_MODEL, object: "model", owned_by: "dots", capabilities: { images: true } },
+      ...Object.entries(IMAGE_MODELS).map(([id, provider]) => ({ id, object: "model", owned_by: provider, capabilities: { images: true } })),
     ],
   }));
   app.post("/v1/chat/completions", async (c) => {

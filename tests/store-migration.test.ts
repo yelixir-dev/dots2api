@@ -39,24 +39,24 @@ function legacyDirectory(): { readonly dir: string; readonly rows: Record<string
   return { dir, rows, jobs };
 }
 
-test("adopts the old bot2api database, keeps its API key, and drops Muse and Grok data", () => {
+test("adopts the old bot2api database, keeps its API key, and drops Grok data while keeping Muse and Dots", () => {
   // Given a data directory from before the rename with accounts, jobs, images and a browser profile of three providers.
   const { dir, jobs } = legacyDirectory();
   // When the current code opens it.
   const store = new Store(dir);
   cleanups.push(() => store.close());
-  // Then only the Dots data remains, under the new file name, with the same API key.
+  // Then only the Grok data is gone, under the new file name, with the same API key.
   expect(existsSync(join(dir, "dots2api.sqlite"))).toBe(true);
   expect(existsSync(join(dir, "bot2api.sqlite"))).toBe(false);
   expect(store.apiKey).toBe("b2a_existing-key");
-  expect(store.accounts().map((account) => account.provider)).toEqual(["dots"]);
+  expect(store.accounts().map((account) => account.provider).sort()).toEqual(["dots", "muse"]);
   expect(String(store.job(jobs["dots"]!.id as never)?.id)).toBe(jobs["dots"]!.id);
-  expect(store.job(jobs["muse"]!.id as never)).toBeNull();
+  expect(String(store.job(jobs["muse"]!.id as never)?.id)).toBe(jobs["muse"]!.id);
   expect(store.job(jobs["grok"]!.id as never)).toBeNull();
   expect(existsSync(join(dir, "images", jobs["dots"]!.id))).toBe(true);
-  expect(existsSync(join(dir, "images", jobs["muse"]!.id))).toBe(false);
+  expect(existsSync(join(dir, "images", jobs["muse"]!.id))).toBe(true);
   expect(existsSync(join(dir, "images", jobs["grok"]!.id))).toBe(false);
-  expect(existsSync(join(dir, "muse"))).toBe(false);
+  expect(existsSync(join(dir, "muse"))).toBe(true);
 });
 
 test("does not overwrite an existing new database with an old one", () => {

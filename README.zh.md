@@ -18,14 +18,16 @@
 
 <!-- README-I18N:END -->
 
-**[dots2api](https://github.com/yelixir-dev/dots2api)**（"Dot to API"）是一个个人网关，把你自己的 OpenAI **Dot** 开放为聊天补全（含工具调用）和图像生成，并附带用于管理账号、任务记录和生成图像的 Web 控制台。它提供两个模型 ID：**`dots-agent`**（聊天）和 **`dots-image`**（图像）。
+**[dots2api](https://github.com/yelixir-dev/dots2api)**（"Dot to API"）是一个个人网关，把你自己的 OpenAI **Dot** 开放为聊天补全（含工具调用）和图像生成，并附带用于管理账号、任务记录和生成图像的 Web 控制台。它提供 **`dots-agent`**（聊天）和两个图像模型：**`dots-image`**（你的 Dot）与 **`muse-image`**（你自己的 muse.ai 账号）。
 
 [功能](#功能) · [安装](#安装) · [使用](#使用) · [工作原理](#工作原理) · [仓库结构](#仓库结构) · [当前限制](#当前限制) · [许可证](#许可证)
 
 ## 功能
 
 - **OpenAI 风格的聊天。** 用 `dots-agent` 调用 `POST /v1/chat/completions`；`tools` 和 `tool_choice` 通过基于提示词的 JSON 桥接工作，返回的调用由你的客户端（例如 OmO）执行。
-- **图像生成。** 用 `dots-image` 调用 `POST /v1/images/generations`，接受 `prompt`、`n`（1–4）、`size`、`quality` 和 `response_format`（`b64_json` 或 `url`）；文件只接受 PNG、JPEG 或 WebP，按文件签名判断，每张不超过 32 MiB。
+- **图像生成。** 用 `dots-image` 或 `muse-image` 调用 `POST /v1/images/generations`，接受 `prompt`、`n`（1–4）、`size`、`quality` 和 `response_format`（`b64_json` 或 `url`）；文件只接受 PNG、JPEG 或 WebP，按文件签名判断，每张不超过 32 MiB。`dots-image` 在 Dot 上运行，`muse-image` 通过你自己的 muse.ai 账号在隔离的 Chrome 配置文件中生成（需要 Node.js 22 或更高版本与 Chromium），通常返回 WebP。
+- **提供商与账号开关。** 每个账号都有自己的启用开关，每个提供商（Dots、Muse）还有一个总开关，在不改动已存凭据的情况下阻止新任务路由到它。
+- **自愈。** 丢失代理的 Dot 线程账号会自动重新绑定到新线程；muse.ai 会话过期或云端工作 VM 休眠的账号会在运行前续签会话并唤醒 VM，因此能在远端重置或服务器重启后自行恢复正常。
 - **Web 控制台。** 运行在回环地址上的 React 控制台，包含账号、任务、带图像预览的任务详情，以及显示本地 API 密钥和 OmO `models.json` 示例的 API 指南。
 - **设备码登录。** 在 `auth.openai.com/codex/device` 批准，可以在另一台电脑上完成；令牌只保存在服务器上，使用 AES-256-GCM 加密，并在到期前 60 秒刷新。
 - **每个账号同时只有一个任务。** 账号忙碌时返回 `409 account_busy`，没有可用账号时返回 `503`，因此并发请求不会共用同一个 Dot 线程。
@@ -64,7 +66,7 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 
 ### 数据
 
-- `dots2api.sqlite`：账号元数据、任务和本地 API 密钥。如果存在旧的 `bot2api.sqlite`，首次启动时会改用这个名称，其中的 **Muse/Grok 账号、任务、图像以及 `muse/` 浏览器配置文件会被删除**。
+- `dots2api.sqlite`：账号元数据、任务和本地 API 密钥。如果存在旧的 `bot2api.sqlite`，首次启动时会改用这个名称，其中的 **Grok Bot 账号、任务、图像会被删除**；Muse 与 Dots 数据会保留。
 - `master.key`：凭据加密密钥。必须和数据库一起保管，否则无法恢复账号。
 - `images/`：生成的图像，不会自动清理。
 - 提示词、结果和图像可能包含敏感内容；请不要共享数据目录，也不要放进 Git。
@@ -78,6 +80,21 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 3. dots2api 从不创建线程，除非线程报告 `threadSource: aeon`，否则拒绝连接。如果在连接成功前取消，创建了一半的账号会被删除。
 
 令牌绝不会返回给浏览器。如果刷新被撤销或结果未知，请重新登录。**不要与 Codex CLI 或其他工具共用同一个 refresh token。** 也可以手动输入 access token（同一对话框中的链接），但没有 refresh token 就无法刷新。已有账号仍可通过其**登录**按钮重新登录。完整约定见 [`src/dots-auth/README.md`](src/dots-auth/README.md)。
+
+### 连接 Muse 账号
+
+Muse 没有官方 OAuth 应用，因此通过保持 muse.ai 的登录会话来连接。在控制台中添加一个 **Muse** 账号后，任选其一：
+
+- **远程浏览器（最简单，无头服务器也可用）。** 在账号上点开 **登录 → 启动远程浏览器**。服务器会在专用虚拟显示（Xvfb）上打开真正的 Chromium，并把画面实时传到控制台，你可以直接在其中完成 Google 登录，然后点击 **完成登录并检查连接**。查看器走控制台自己的端口，无需额外的 SSH 隧道。
+  在新的无头服务器（例如 Oracle Cloud）上，用 root 安装一次这两个依赖：
+  ```bash
+  sudo apt install -y xvfb        # Debian/Ubuntu；Oracle Linux 用：sudo dnf install -y xorg-x11-server-Xvfb
+  bunx playwright install --with-deps chromium
+  ```
+  `--with-deps` 会一并安装 Chromium 的共享库。如果服务的 `PATH` 里没有 `Xvfb`，请调整 `PATH` 或安装到 `/usr/bin`（启动器用 `Bun.which("Xvfb")` 查找）。
+- **导入 Cookie。** 在你自己的浏览器登录 muse.ai，打开 DevTools → Network，选一个 `muse.ai` 请求，把它的 `Cookie` 请求头粘贴到账号的 **Cookie header** 字段（或把导出的 cookie JSON 粘到 **Cookies JSON**），然后点 **保存并检查**。
+
+两种方式都会把续期后的会话 Cookie 写回账号，Muse 自愈会在每次任务前续签会话并唤醒工作 VM。
 
 ### 聊天
 

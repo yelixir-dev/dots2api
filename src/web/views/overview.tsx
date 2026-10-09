@@ -1,13 +1,15 @@
 import { CircleCheck, KeyRound, Plus } from "lucide-react";
-import type { Account, ProviderInfo } from "../../contracts";
+import type { Account, ProviderId, ProviderStatus } from "../../contracts";
 import { AccountStatusBadge, JobRow, JobStatusBadge, LoadError } from "../components/domain";
-import { Button, EmptyState, PageHeader, SectionHead, SkeletonRows, useNow } from "../components/ui";
+import { Button, EmptyState, PageHeader, SectionHead, SkeletonRows, StatusBadge, Switch, useNow } from "../components/ui";
 import { runCheck, useConsoleActions } from "../lib/actions";
+import { toApiError } from "../lib/api";
 import { countAccounts, cx, firstLine, providerName } from "../lib/format";
 import { routeHref } from "../lib/router";
-import { useGateway } from "../lib/store";
+import { gateway, useGateway } from "../lib/store";
+import { notify } from "../lib/toast";
 
-function ProviderSummary({ provider, accounts, onAdd }: { readonly provider: ProviderInfo; readonly accounts: readonly Account[]; readonly onAdd: () => void }) {
+function ProviderSummary({ provider, accounts, onAdd, onToggle }: { readonly provider: ProviderStatus; readonly accounts: readonly Account[]; readonly onAdd: () => void; readonly onToggle: (enabled: boolean) => void }) {
   const counts = countAccounts(accounts);
   const items: ReadonlyArray<readonly [string, number, boolean]> = [
     ["계정", counts.total, false],
@@ -20,7 +22,10 @@ function ProviderSummary({ provider, accounts, onAdd }: { readonly provider: Pro
   return (
     <div className="provider-row">
       <div className="provider-row__id">
-        <p className="provider-row__name">{provider.name}</p>
+        <p className="provider-row__name">
+          {provider.name}
+          {provider.enabled ? null : <StatusBadge tone="neutral">꺼짐</StatusBadge>}
+        </p>
         <p className="provider-row__desc">{provider.description}</p>
       </div>
       <dl className="counts">
@@ -32,6 +37,15 @@ function ProviderSummary({ provider, accounts, onAdd }: { readonly provider: Pro
         ))}
       </dl>
       <div className="provider-row__action">
+        <div className="provider-row__switch">
+          <Switch
+            checked={provider.enabled}
+            label={`${provider.name} 공급자 사용`}
+            title={provider.enabled ? `${provider.name} 공급자를 끄면 새 작업이 이 공급자로 가지 않습니다` : `${provider.name} 공급자를 켭니다`}
+            onChange={onToggle}
+          />
+          <span aria-hidden="true">{provider.enabled ? "사용" : "꺼짐"}</span>
+        </div>
         <Button size="sm" icon={<Plus aria-hidden="true" />} onClick={onAdd}>
           {provider.name} 추가
         </Button>
@@ -53,6 +67,15 @@ export function OverviewView() {
   const erroredAccounts = accountList.filter((account) => account.status === "error");
   const accountFigure = (value: number): string => (accounts.data === null ? "—" : String(value));
   const jobFigure = (value: number): string => (jobs.data === null ? "—" : String(value));
+
+  async function toggleProvider(id: ProviderId, enabled: boolean): Promise<void> {
+    try {
+      await gateway.setProviderEnabled(id, enabled);
+      notify("ok", `‘${providerName(providers.data, id)}’ 공급자를 ${enabled ? "켰습니다" : "껐습니다"}`);
+    } catch (error) {
+      notify("danger", "공급자 상태를 바꾸지 못했습니다", (await toApiError(error)).message);
+    }
+  }
 
   return (
     <div className="page">
@@ -123,6 +146,7 @@ export function OverviewView() {
                 provider={provider}
                 accounts={accountList.filter((account) => account.provider === provider.id)}
                 onAdd={() => openCreateAccount(provider.id)}
+                onToggle={(enabled) => void toggleProvider(provider.id, enabled)}
               />
             ))}
           </div>

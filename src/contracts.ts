@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const providerIdSchema = z.enum(["dots"]);
+export const providerIdSchema = z.enum(["dots", "muse"]);
 export type ProviderId = z.infer<typeof providerIdSchema>;
 export const accountIdSchema = z.string().uuid().brand<"AccountId">();
 export type AccountId = z.infer<typeof accountIdSchema>;
@@ -35,6 +35,8 @@ export interface JobImage {
 export interface RunImage {
   readonly mime: JobImage["mime"];
   readonly data: Uint8Array;
+  readonly width?: number | undefined;
+  readonly height?: number | undefined;
   readonly revisedPrompt?: string;
 }
 export interface Job {
@@ -69,8 +71,14 @@ export interface ProviderInfo {
     readonly nativeTools: false;
     readonly usage: "unknown";
     readonly execution: "remote-agent";
+    /** Whether this provider serves a `{id}-agent` chat model through /v1/chat/completions. */
+    readonly chat: boolean;
   };
   readonly setupUrl: string;
+}
+/** A provider plus its operator switch: a disabled provider accepts no new jobs. */
+export interface ProviderStatus extends ProviderInfo {
+  readonly enabled: boolean;
 }
 export interface CheckResult {
   readonly detail: string;
@@ -85,6 +93,8 @@ export interface AdapterContext {
   readonly dataDir: string;
   readonly signal: AbortSignal;
   readonly onAccepted?: (remoteId: string | null) => void;
+  /** Present when the caller can persist credentials an adapter repaired (for example a rebound thread). */
+  readonly saveCredentials?: (credentials: Credentials) => void;
 }
 export interface ProviderAdapter {
   readonly info: ProviderInfo;

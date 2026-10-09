@@ -258,7 +258,7 @@ export function AccountDrawer({ editor, onClose }: { readonly editor: AccountEdi
         ) : null}
 
         <Notice title="연결 확인">
-          <p>저장한 뒤 ‘확인’을 누르면 서버가 Dot에 실제로 접속해 그 결과를 계정 상태로 기록합니다.</p>
+          <p>저장한 뒤 ‘확인’을 누르면 서버가 공급자에 실제로 접속해 그 결과를 계정 상태로 기록합니다.</p>
         </Notice>
         {message ? <Notice tone={message.tone}>{message.text}</Notice> : null}
       </form>

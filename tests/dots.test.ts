@@ -250,36 +250,170 @@ test("missing credentials and a non-Dot thread fail without submission", async (
   });
 });
 
-test("check remains unverified when thread source is absent", async () => {
-  // Given a reachable thread/read response without an observed Dot identity.
+test("check refuses a thread that is not an Aeon Dot", async () => {
+  // Given a reachable thread carrying some other Dot identity.
   const methods: string[] = [];
   await withServer((peer, request) => {
     methods.push(request.method);
     if (request.method === "initialize") reply(peer, request, {});
-    if (request.method === "thread/read") reply(peer, request, { thread: { id: "dot-thread" } });
+    if (request.method === "thread/read") reply(peer, request, { thread: { id: "dot-thread", threadSource: "user", modelProvider: "local" } });
   }, async (credentials) => {
     // When the account connection is checked.
-    await expect(dotsAdapter.check(credentials, context)).rejects.toMatchObject({
-      code: "dots_thread_unverified", uncertain: false,
+    await expect(dotsAdapter.check({ ...credentials, threadOrigin: "self" }, context)).rejects.toMatchObject({
+      code: "dots_thread", status: 400, uncertain: false,
     });
   });
   // Then a matching thread ID alone cannot mark this account ready.
   expect(methods).toEqual(["initialize", "initialized", "thread/read"]);
 });
 
-test("run refuses to submit when thread source is absent", async () => {
-  // Given a reachable ordinary thread without the Aeon source marker.
+test("run refuses to submit to a thread that is not an Aeon Dot", async () => {
+  // Given a reachable thread carrying some other Dot identity.
   const methods: string[] = [];
   await withServer((peer, request) => {
     methods.push(request.method);
     if (request.method === "initialize") reply(peer, request, {});
-    if (request.method === "thread/read") reply(peer, request, { thread: { id: "dot-thread" } });
+    if (request.method === "thread/read") reply(peer, request, { thread: { id: "dot-thread", threadSource: "user", modelProvider: "", canAcceptDirectInput: false } });
   }, async (credentials) => {
     // When a prompt targets that thread.
-    await expect(dotsAdapter.run(credentials, "Hello", context)).rejects.toMatchObject({
-      code: "dots_thread_unverified", uncertain: false,
+    await expect(dotsAdapter.run({ ...credentials, threadOrigin: "self" }, "Hello", {
+      ...context,
+      saveCredentials: () => { throw new Error("Foreign threads must not be rebound"); },
+    })).rejects.toMatchObject({
+      code: "dots_thread", status: 400, uncertain: false,
     });
   });
   // Then no resume or turn submission occurs.
   expect(methods).toEqual(["initialize", "initialized", "thread/read"]);
+});
+
+function refuse(peer: Peer, request: Request, message: string): void {
+  peer.send(JSON.stringify({
+    id: request.id,
+    error: { code: -32600, data: { grpcStatusCode: 5 }, message },
+  }));
+}
+
+const RECLAIMED = "Some requested entity was not found: thread not found";
+
+test("run binds a replacement thread when the selected Dot thread lost its agent", async () => {
+  // Given an account whose selected thread can never accept a turn again.
+  const methods: string[] = [];
+  const saved: Credentials[] = [];
+  await withServer((peer, request) => {
+    methods.push(request.method);
+    if (handshake(peer, request)) return;
+    if (request.method === "thread/start") {
+      reply(peer, request, { thread: { id: "healed-thread" } });
+      return;
+    }
+    if (request.method !== "turn/start") return;
+    if (request.params.threadId === "dot-thread") {
+      refuse(peer, request, RECLAIMED);
+      return;
+    }
+    // Then the replacement thread receives the same prompt and completes there.
+    expect(request.params.threadId).toBe("healed-thread");
+    expect(request.params.input).toEqual([{ type: "text", text: "Hello Dot" }]);
+    peer.send(JSON.stringify({ method: "turn/completed", params: {
+      threadId: "dot-thread", turn: { id: "turn-9", status: "completed", items: [{ id: "wrong", type: "agentMessage", text: "stale" }] },
+    } }));
+    peer.send(JSON.stringify({ method: "turn/completed", params: {
+      threadId: "healed-thread", turn: { id: "turn-2", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "Recovered" }] },
+    } }));
+    reply(peer, request, { turn: { id: "turn-2", status: "inProgress" } });
+  }, async (credentials) => {
+    // When a prompt hits the reclaimed thread.
+    const validated = dotsAdapter.validate({ ...credentials, refreshToken: "refresh-token", threadOrigin: "self" });
+    expect(validated).toMatchObject({ refreshToken: "refresh-token", threadOrigin: "self" });
+    const result = await dotsAdapter.run(validated, "Hello Dot", {
+      ...context,
+      saveCredentials: (repaired) => { saved.push(repaired); },
+    });
+    // Then the turn is retried once on the replacement and its own completion is returned.
+    expect(result).toEqual({ text: "Recovered", remoteId: "turn-2" });
+  });
+  // Then the rebind is submitted once and persisted for later jobs.
+  expect(methods).toEqual(["initialize", "initialized", "thread/read", "thread/resume", "turn/start", "thread/start", "turn/start"]);
+  expect(saved).toHaveLength(1);
+  expect(saved[0]).toMatchObject({ accessToken: "test-token", accountId: "account-42", threadId: "healed-thread", threadOrigin: "self", refreshToken: "refresh-token" });
+});
+
+test("run does not rebind a reclaimed thread without a credential store", async () => {
+  await withServer((peer, request) => {
+    if (handshake(peer, request)) return;
+    if (request.method === "turn/start") refuse(peer, request, RECLAIMED);
+  }, async (credentials) => {
+    const failure = await dotsAdapter.run(credentials, "Hello Dot", context).catch((error: unknown) => error);
+    // Then the reclaimed thread is reported with the upstream reason and no replacement is created.
+    expect(failure).toBeInstanceOf(GatewayError);
+    expect(failure).toMatchObject({ code: "dots_thread_missing", status: 502, uncertain: true });
+    expect((failure as GatewayError).message).toContain("thread not found");
+    expect((failure as GatewayError).message).toContain("-32600");
+  });
+});
+
+test("run reports the upstream reason for an unrelated RPC rejection", async () => {
+  await withServer((peer, request) => {
+    if (handshake(peer, request)) return;
+    if (request.method === "turn/start") {
+      peer.send(JSON.stringify({ id: request.id, error: { code: -32601, message: "Method not found" } }));
+    }
+  }, async (credentials) => {
+    await expect(dotsAdapter.run(credentials, "Hello Dot", context)).rejects.toMatchObject({
+      code: "dots_rpc",
+      message: "Dot rejected an RPC request (-32601): Method not found",
+    });
+  });
+});
+
+test("run rebinds a Dot thread whose record survived without its agent", async () => {
+  const methods: string[] = [];
+  const saved: Credentials[] = [];
+  await withServer((peer, request) => {
+    methods.push(request.method);
+    if (request.method === "thread/read") {
+      reply(peer, request, { thread: { id: "dot-thread", threadSource: "aeon", modelProvider: "", canAcceptDirectInput: false } });
+      return;
+    }
+    if (handshake(peer, request)) return;
+    if (request.method === "thread/start") {
+      reply(peer, request, { thread: { id: "healed-thread" } });
+      return;
+    }
+    if (request.method !== "turn/start") return;
+    peer.send(JSON.stringify({ method: "turn/completed", params: {
+      threadId: "healed-thread", turn: { id: "turn-3", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "Recovered" }] },
+    } }));
+    reply(peer, request, { turn: { id: "turn-3", status: "inProgress" } });
+  }, async (credentials) => {
+    // Then a dead-looking thread is replaced before any turn is submitted to it.
+    const result = await dotsAdapter.run(credentials, "Hello Dot", { ...context, saveCredentials: (repaired) => { saved.push(repaired); } });
+    expect(result).toEqual({ text: "Recovered", remoteId: "turn-3" });
+  });
+  expect(methods).not.toContain("thread/resume");
+  expect(saved[0]).toMatchObject({ threadId: "healed-thread", threadOrigin: "self" });
+});
+
+test("run keeps using a thread this gateway created itself", async () => {
+  const methods: string[] = [];
+  await withServer((peer, request) => {
+    methods.push(request.method);
+    if (request.method === "thread/read") {
+      reply(peer, request, { thread: { id: "dot-thread", threadSource: null, modelProvider: "local", canAcceptDirectInput: true } });
+      return;
+    }
+    if (handshake(peer, request)) return;
+    if (request.method === "turn/start") {
+      peer.send(JSON.stringify({ method: "turn/completed", params: {
+        threadId: "dot-thread", turn: { id: "turn-4", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "Reused" }] },
+      } }));
+      reply(peer, request, { turn: { id: "turn-4", status: "inProgress" } });
+    }
+  }, async (credentials) => {
+    // Given credentials already rebound by a previous job, the replacement is trusted without a new one.
+    const result = await dotsAdapter.run({ ...credentials, threadOrigin: "self" }, "Hello Dot", context);
+    expect(result).toEqual({ text: "Reused", remoteId: "turn-4" });
+  });
+  expect(methods).not.toContain("thread/start");
 });

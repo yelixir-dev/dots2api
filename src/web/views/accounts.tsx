@@ -9,6 +9,7 @@ import { cx, providerName, shortId } from "../lib/format";
 import { gateway, useGateway } from "../lib/store";
 import { notify } from "../lib/toast";
 import { DotsLoginDrawer } from "./dots-login";
+import { MuseLoginDrawer } from "./muse-login";
 
 type ProviderFilter = ProviderId | "all";
 
@@ -72,7 +73,7 @@ function AccountRow({ account, provider, contextWindow, contextBasis, checkStart
           <p className="account__progress" role="status">
             <LogIn aria-hidden="true" />
             <span>
-              서버가 Dot에 접속하고 있습니다. 다른 화면으로 이동해도 확인은 계속됩니다.
+              서버가 공급자에 접속하고 있습니다. 다른 화면으로 이동해도 확인은 계속됩니다.
             </span>
           </p>
         ) : null}
@@ -136,6 +137,7 @@ function AccountRow({ account, provider, contextWindow, contextBasis, checkStart
         </div>
       </div>
       {loginOpen && account.provider === "dots" ? <DotsLoginDrawer account={account} onClose={() => setLoginOpen(false)} /> : null}
+      {loginOpen && account.provider === "muse" ? <MuseLoginDrawer account={account} onClose={() => setLoginOpen(false)} /> : null}
     </article>
   );
 }
@@ -163,7 +165,7 @@ export function AccountsView() {
     <div className="page">
       <PageHeader
         title="계정"
-        description="Dot 계정을 등록하고 실제 연결을 확인합니다. 입력한 인증값은 암호화해 저장합니다."
+        description="계정을 등록하고 실제 연결을 확인합니다. 입력한 인증값은 암호화해 저장합니다."
         actions={
           <Button variant="primary" icon={<Plus aria-hidden="true" />} onClick={addForFilter}>
             계정 추가

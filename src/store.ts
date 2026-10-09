@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { accountIdSchema, jobIdSchema, providerIdSchema } from "./contracts";
@@ -75,17 +75,36 @@ export class Store {
     this.apiKey = existing?.value ?? `d2a_${randomBytes(32).toString("base64url")}`;
     if (!existing) this.db.query("INSERT INTO settings VALUES ('api_key', ?)").run(this.apiKey);
     this.dropRetiredProviders();
+    this.migrateImageExtensions();
   }
 
-  /** Muse and Grok Bot support was removed; their accounts, jobs, images and browser profiles are deleted once. */
+  /** Grok Bot support was removed; its accounts, jobs and images are deleted once. Dots and Muse data are kept. */
   private dropRetiredProviders(): void {
-    const retired = this.db.query<{ id: string }, []>("SELECT id FROM jobs WHERE json_extract(body, '$.provider') NOT IN ('dots')").all();
+    const retired = this.db.query<{ id: string }, []>("SELECT id FROM jobs WHERE json_extract(body, '$.provider') NOT IN ('dots', 'muse')").all();
     for (const job of retired) rmSync(join(this.dataDir, "images", job.id), { recursive: true, force: true });
     this.db.exec(`
-      DELETE FROM jobs WHERE json_extract(body, '$.provider') NOT IN ('dots');
-      DELETE FROM accounts WHERE json_extract(body, '$.provider') NOT IN ('dots');
+      DELETE FROM jobs WHERE json_extract(body, '$.provider') NOT IN ('dots', 'muse');
+      DELETE FROM accounts WHERE json_extract(body, '$.provider') NOT IN ('dots', 'muse');
     `);
-    rmSync(join(this.dataDir, "muse"), { recursive: true, force: true });
+  }
+
+  /** Older images were stored without an extension; rename them to `<index>.<ext>` from their signature. */
+  private migrateImageExtensions(): void {
+    const root = join(this.dataDir, "images");
+    if (!existsSync(root)) return;
+    for (const jobId of readdirSync(root)) {
+      const directory = join(root, jobId);
+      for (const name of readdirSync(directory)) {
+        if (name.includes(".")) continue;
+        const path = join(directory, name);
+        const header = Buffer.alloc(12);
+        const descriptor = openSync(path, "r");
+        let read = 0;
+        try { read = readSync(descriptor, header, 0, header.length, 0); } finally { closeSync(descriptor); }
+        const mime = sniffImage(header.subarray(0, read));
+        if (mime) renameSync(path, `${path}.${IMAGE_EXTENSIONS[mime]}`);
+      }
+    }
   }
 
   /** Called by the serving process at startup, never by read-only diagnostics. */
@@ -162,6 +181,28 @@ export class Store {
     return this.db.query<Row, []>("SELECT body FROM jobs ORDER BY rowid DESC LIMIT 200").all()
       .map((row) => jobSchema.parse(JSON.parse(row.body)));
   }
+  /** The operator's per-provider switch; a disabled provider accepts no new jobs. Default: every provider enabled. */
+  providerStates(): Record<ProviderId, boolean> {
+    const row = this.db.query<{ value: string }, []>("SELECT value FROM settings WHERE name='provider_enabled'").get();
+    let stored: Record<string, unknown> = {};
+    if (row) {
+      try {
+        const parsed: unknown = JSON.parse(row.value);
+        if (parsed && typeof parsed === "object") stored = parsed as Record<string, unknown>;
+      } catch { /* a corrupt row falls back to all-enabled */ }
+    }
+    const states = {} as Record<ProviderId, boolean>;
+    for (const id of providerIdSchema.options) states[id] = stored[id] !== false;
+    return states;
+  }
+  providerEnabled(id: ProviderId): boolean {
+    return this.providerStates()[id];
+  }
+  setProviderEnabled(id: ProviderId, enabled: boolean): void {
+    const next = { ...this.providerStates(), [id]: enabled };
+    this.db.query("INSERT INTO settings VALUES ('provider_enabled', ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value")
+      .run(JSON.stringify(next));
+  }
   job(id: JobId): Job | null {
     const row = this.db.query<Row, [string]>("SELECT body FROM jobs WHERE id=?").get(id);
     return row ? jobSchema.parse(JSON.parse(row.body)) : null;
@@ -171,9 +212,10 @@ export class Store {
       .run(job.id, job.accountId, JSON.stringify(job));
     return job;
   }
-  /** Images live beside the database (`data/images/<job id>/<index>`), never inside it. */
-  private imagePath(jobId: JobId, index: number): string {
-    return join(this.dataDir, "images", jobId, String(index));
+  /** Images live beside the database (`data/images/<job id>/<index>.<ext>`), never inside it. */
+  private imagePath(jobId: JobId, index: number, extension?: string): string {
+    const base = join(this.dataDir, "images", jobId, String(index));
+    return extension ? `${base}.${extension}` : base;
   }
   saveImages(jobId: JobId, images: readonly RunImage[]): JobImage[] {
     const saved: JobImage[] = [];
@@ -182,8 +224,8 @@ export class Store {
       const mime = sniffImage(image.data);
       if (!mime || image.data.byteLength > MAX_IMAGE_BYTES) continue;
       mkdirSync(directory, { recursive: true, mode: 0o700 });
-      writeFileSync(this.imagePath(jobId, saved.length), image.data, { mode: 0o600 });
-      const size = pngSize(image.data);
+      writeFileSync(this.imagePath(jobId, saved.length, IMAGE_EXTENSIONS[mime]), image.data, { mode: 0o600 });
+      const size = image.width && image.height ? { width: image.width, height: image.height } : pngSize(image.data);
       saved.push({
         mime, bytes: image.data.byteLength, ...(size ?? {}),
         ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt.slice(0, 4000) } : {}),
@@ -194,12 +236,16 @@ export class Store {
   image(jobId: JobId, index: number): { readonly mime: JobImage["mime"]; readonly extension: string; readonly data: Uint8Array<ArrayBuffer> } | null {
     const image = this.job(jobId)?.images[index];
     if (!image) return null;
-    try {
-      return { mime: image.mime, extension: IMAGE_EXTENSIONS[image.mime], data: new Uint8Array(readFileSync(this.imagePath(jobId, index))) };
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-      throw error;
+    const extension = IMAGE_EXTENSIONS[image.mime];
+    // The extension-less name is the pre-extension layout; keep reading those files.
+    for (const path of [this.imagePath(jobId, index, extension), this.imagePath(jobId, index)]) {
+      try {
+        return { mime: image.mime, extension, data: new Uint8Array(readFileSync(path)) };
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      }
     }
+    return null;
   }
   close(): void { this.db.close(); }
 }

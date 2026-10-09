@@ -1,18 +1,42 @@
 import { resolve } from "node:path";
+import type { ServerWebSocket } from "bun";
 import { createApi } from "./api";
 import { Gateway } from "./gateway";
 import { Store } from "./store";
 import { dotsAdapter } from "./providers/dots";
+import { museAdapter } from "./providers/muse";
 import index from "./web/index.html";
 import { DotsAuth } from "./dots-auth";
+import { createMuseLoginService } from "./muse-login";
+import { MuseLoginRoutes } from "./muse-login-routes";
+import { accountIdSchema } from "./contracts";
 
 const store = new Store(resolve(process.env["DOTS2API_DATA_DIR"] ?? "data"));
 store.recoverInterruptedJobs();
 const dotsAuth = new DotsAuth();
-const gateway = new Gateway(store, { dots: dotsAdapter }, dotsAuth);
-const api = createApi(gateway, dotsAuth);
+const gateway = new Gateway(store, { dots: dotsAdapter, muse: museAdapter }, dotsAuth);
+const museLogin = createMuseLoginService({ dataDir: store.dataDir, onEnded: (session) => museRoutes.handleEnded(session) });
+const museRoutes = new MuseLoginRoutes(gateway, museLogin);
+const api = createApi(gateway, dotsAuth, museRoutes);
 let stopping = false;
-const server = Bun.serve({
+
+interface ViewerData { readonly accountId: string; unsubscribe?: () => void; }
+const STREAM_PATH = /^\/api\/accounts\/([^/]+)\/muse-login\/stream$/;
+
+/** The viewer WebSocket is same-origin only and exists just while a login session is active. */
+function upgradeViewer(request: Request, server: Bun.Server<ViewerData>): Response | undefined {
+  const url = new URL(request.url);
+  const match = STREAM_PATH.exec(url.pathname);
+  if (!match?.[1]) return undefined;
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return new Response("Local access only.", { status: 403 });
+  const origin = request.headers.get("origin");
+  if (origin && origin !== url.origin) return new Response("Origin is not allowed.", { status: 403 });
+  const accountId = accountIdSchema.safeParse(decodeURIComponent(match[1]));
+  if (!accountId.success || !museLogin.activeBrowser(accountId.data)) return new Response("No active login session.", { status: 404 });
+  return server.upgrade(request, { data: { accountId: accountId.data } }) ? undefined : new Response("Upgrade failed.", { status: 400 });
+}
+
+const server = Bun.serve<ViewerData>({
   hostname: "127.0.0.1",
   port: Number(process.env["PORT"] ?? 3010),
   idleTimeout: 255,
@@ -20,8 +44,26 @@ const server = Bun.serve({
   maxRequestBodySize: 16 * 1024 * 1024,
   development: process.env["NODE_ENV"] !== "production",
   routes: { "/": index },
+  websocket: {
+    open(ws: ServerWebSocket<ViewerData>) {
+      const browser = museLogin.activeBrowser(accountIdSchema.parse(ws.data.accountId));
+      if (!browser) { ws.close(1011, "No active login session."); return; }
+      ws.data.unsubscribe = browser.frames((frame) => { try { ws.send(JSON.stringify({ t: "frame", d: frame })); } catch { return; } });
+      ws.send(JSON.stringify({ t: "ready", w: browser.viewport.width, h: browser.viewport.height }));
+    },
+    message(ws: ServerWebSocket<ViewerData>, raw: string | Buffer) {
+      const browser = museLogin.activeBrowser(accountIdSchema.parse(ws.data.accountId));
+      if (!browser) return;
+      try { browser.input(JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"))); } catch { return; }
+    },
+    close(ws: ServerWebSocket<ViewerData>) { ws.data.unsubscribe?.(); },
+  },
   fetch(request, server) {
     if (stopping) return new Response("Server is shutting down.", { status: 503 });
+    if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      const upgraded = upgradeViewer(request, server);
+      if (upgraded !== undefined) return upgraded;
+    }
     // Provider operations have their own bounded deadlines; do not kill a valid login at 255s.
     server.timeout(request, 0);
     return api.fetch(request);
@@ -35,8 +77,11 @@ async function shutdown(): Promise<void> {
   stopping = true;
   gateway.stop();
   dotsAuth.close();
-  try { await gateway.drain(); }
-  finally {
+  try {
+    await museLogin.close();
+    await gateway.drain();
+  } finally {
+    museRoutes.close();
     await server.stop(true);
     store.close();
   }

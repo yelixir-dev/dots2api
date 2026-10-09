@@ -9,7 +9,7 @@ export type AccountEditor =
   | { readonly mode: "create"; readonly provider: ProviderId | null }
   | { readonly mode: "edit"; readonly account: Account };
 
-export type EditorState = AccountEditor | { readonly mode: "connect" };
+export type EditorState = AccountEditor | { readonly mode: "connect" } | { readonly mode: "muse-connect" };
 
 export interface ConsoleActions {
   readonly openCreateAccount: (provider?: ProviderId) => void;

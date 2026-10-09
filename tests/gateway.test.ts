@@ -18,13 +18,13 @@ function fixture(run: ProviderAdapter["run"] = async () => ({ text: "fixture res
     return {
       info: { id, name: id, description: "Test transport", setupUrl: "https://example.org", fields: [],
         contextWindow: 123456, contextBasis: "configured",
-        capabilities: { nativeTools: false, usage: "unknown", execution: "remote-agent" } },
+        capabilities: { nativeTools: false, usage: "unknown", execution: "remote-agent", chat: id === "dots" } },
       validate: (credentials) => credentials,
       check: async () => ({ detail: "Connected to fixture." }),
       run,
     };
   }
-  const gateway = new Gateway(store, { dots: adapter("dots") });
+  const gateway = new Gateway(store, { dots: adapter("dots"), muse: adapter("muse") });
   return { dir, store, gateway, app: createApi(gateway) };
 }
 
@@ -364,6 +364,7 @@ describe("account isolation and job state", () => {
   });
   describe("image generation endpoint", () => {
     const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64"));
+    const webp = Uint8Array.from(Buffer.concat([Buffer.from("RIFF"), Buffer.from([0x24, 0, 0, 0]), Buffer.from("WEBP"), Buffer.from("VP8 "), Buffer.alloc(16)]));
     const post = (app: ReturnType<typeof fixture>["app"], key: string | null, body: unknown) =>
       app.request("http://localhost/v1/images/generations", {
         method: "POST", headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
@@ -454,6 +455,74 @@ describe("account isolation and job state", () => {
       expect((await post(app, store.apiKey, { prompt: "p", model: "dall-e-3" })).status).toBe(422);
       expect((await post(app, null, { prompt: "p" })).status).toBe(401);
     });
+
+    test("routes the muse-image model to a Muse account and reports the real format", async () => {
+      // Given a ready Dot account and a ready Muse account.
+      const { app, store, gateway } = fixture(async () => ({ text: "done", remoteId: "r", images: [{ mime: "image/webp", data: webp }] }));
+      await gateway.check(gateway.create("dots", "Dot", {}).id);
+      await gateway.check(gateway.create("muse", "Muse", {}).id);
+      // When asking for the muse-image model.
+      const response = await post(app, store.apiKey, { model: "muse-image", prompt: "a red dot" });
+      // Then it runs on the Muse account and returns WebP, not a hardcoded png label.
+      expect(response.status).toBe(200);
+      const jobId = response.headers.get("x-dots2api-job-id") ?? "";
+      expect(String(gateway.store.job(jobId as never)?.provider)).toBe("muse");
+      const json = await response.json();
+      expect(json.data).toHaveLength(1);
+      expect(json.output_format).toBe("webp");
+      expect(Buffer.from(json.data[0].b64_json, "base64").equals(Buffer.from(webp))).toBe(true);
+    });
+
+    test("refuses a switched-off provider's image model instead of silently rerouting", async () => {
+      // Given a ready Muse account and the Muse provider switched off.
+      const { app, store, gateway } = fixture(async () => ({ text: "done", remoteId: "r", images: [{ mime: "image/png", data: png }] }));
+      await gateway.check(gateway.create("muse", "Muse", {}).id);
+      gateway.setProviderEnabled("muse", false);
+      // When asking for the muse-image model.
+      const response = await post(app, store.apiKey, { model: "muse-image", prompt: "p" });
+      // Then it fails clearly rather than running on Dots.
+      expect(response.status).toBe(503);
+      expect((await response.json()).error.code).toBe("provider_disabled");
+    });
+  });
+
+  describe("provider on/off", () => {
+    const jsonHeaders = { "sec-fetch-site": "same-origin", "content-type": "application/json" };
+    const patchProvider = (app: ReturnType<typeof fixture>["app"], id: string, body: unknown) =>
+      app.request(`http://localhost/api/providers/${id}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify(body) });
+
+    test("a disabled provider accepts no new jobs until it is switched back on", async () => {
+      // Given a ready Dot account.
+      const { gateway } = fixture();
+      await gateway.check(gateway.create("dots", "Dot", {}).id);
+      // When the operator switches Dots off.
+      gateway.setProviderEnabled("dots", false);
+      // Then a Dots job is refused with a clear reason.
+      expect(() => gateway.submit({ provider: "dots", prompt: "x" })).toThrow(GatewayError);
+      expect(() => gateway.submit({ provider: "dots", prompt: "x" })).toThrow(/switched off/);
+      // When switched back on, the same request runs.
+      gateway.setProviderEnabled("dots", true);
+      const job = gateway.submit({ provider: "dots", prompt: "x" });
+      expect((await gateway.wait(job.id)).status).toBe("completed");
+    });
+
+    test("lists every provider with its switch and updates it over HTTP", async () => {
+      const { app } = fixture();
+      const listed = await (await app.request("http://localhost/api/providers", { headers: { "sec-fetch-site": "same-origin" } })).json();
+      expect(listed.providers.map((p: { id: string; enabled: boolean }) => [p.id, p.enabled])).toEqual([["dots", true], ["muse", true]]);
+      // When the operator switches Muse off over HTTP.
+      const patched = await patchProvider(app, "muse", { enabled: false });
+      expect(patched.status).toBe(200);
+      expect((await patched.json()).provider.enabled).toBe(false);
+      // Then the listing reflects it.
+      const after = await (await app.request("http://localhost/api/providers", { headers: { "sec-fetch-site": "same-origin" } })).json();
+      expect(after.providers.find((p: { id: string }) => p.id === "muse").enabled).toBe(false);
+    });
+
+    test("rejects an unknown provider id", async () => {
+      const { app } = fixture();
+      expect((await patchProvider(app, "bogus", { enabled: false })).status).toBe(400);
+    });
   });
 
   describe("job images", () => {
@@ -508,6 +577,39 @@ describe("account isolation and job state", () => {
       store.db.query("INSERT INTO jobs VALUES (?, ?, ?)").run(legacy.id, legacy.accountId, JSON.stringify(legacy));
       // When read back, then it parses with an empty image list.
       expect(store.job(legacy.id as never)?.images).toEqual([]);
+    });
+
+    test("writes images with the extension of their detected format", async () => {
+      // Given a job that produced a PNG.
+      const { dir, gateway } = fixture(async () => ({ text: "done", remoteId: "r", images: [{ mime: "image/png", data: png }] }));
+      const account = gateway.create("dots", "Ext", {});
+      await gateway.check(account.id);
+      const job = gateway.submit({ accountId: account.id, prompt: "draw" });
+      await gateway.wait(job.id);
+      // When stored, then the file carries the detected extension.
+      expect(existsSync(join(dir, "images", job.id, "0.png"))).toBe(true);
+      expect(existsSync(join(dir, "images", job.id, "0"))).toBe(false);
+    });
+
+    test("renames a legacy extension-less image on open and still reads it", async () => {
+      // Given a data directory holding an image saved without an extension.
+      const dir = mkdtempSync(join(tmpdir(), "dots2api-ext-"));
+      cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+      const first = new Store(dir);
+      const jobId = crypto.randomUUID();
+      mkdirSync(join(dir, "images", jobId), { recursive: true });
+      writeFileSync(join(dir, "images", jobId, "0"), png);
+      first.db.query("INSERT INTO jobs VALUES (?, ?, ?)").run(jobId, crypto.randomUUID(), JSON.stringify({
+        id: jobId, accountId: crypto.randomUUID(), provider: "dots", prompt: "p", status: "completed", output: "", error: null, remoteId: null,
+        images: [{ mime: "image/png", bytes: png.byteLength }], createdAt: "2026-10-03T00:00:00.000Z", finishedAt: "2026-10-03T00:00:01.000Z",
+      }));
+      first.close();
+      // When the store opens again, then the file is renamed and the image still reads back.
+      const store = new Store(dir);
+      cleanups.push(() => store.close());
+      expect(existsSync(join(dir, "images", jobId, "0.png"))).toBe(true);
+      expect(existsSync(join(dir, "images", jobId, "0"))).toBe(false);
+      expect(store.image(jobId as never, 0)?.mime).toBe("image/png");
     });
   });
   test("returns a job correlation header when remote completion is uncertain", async () => {

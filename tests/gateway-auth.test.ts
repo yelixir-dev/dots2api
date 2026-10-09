@@ -21,13 +21,13 @@ test("gateway refreshes stored tokens before adapter validation and uses rotated
   const adapter: ProviderAdapter = {
     info: { id: "dots", name: "Dots", description: "", fields: [], setupUrl: "https://example.org",
       contextWindow: 272000, contextBasis: "configured",
-      capabilities: { nativeTools: false, usage: "unknown", execution: "remote-agent" } },
+      capabilities: { nativeTools: false, usage: "unknown", execution: "remote-agent", chat: true } },
     // A transport intentionally drops OAuth metadata, as the real Dots adapter does.
     validate: (value) => ({ accessToken: value["accessToken"] ?? "" }),
     check: async () => ({ detail: "ready" }),
     run: async (value) => { used = value["accessToken"] ?? ""; return { text: "done", remoteId: null }; },
   };
-  const gateway = new Gateway(store, { dots: adapter }, auth);
+  const gateway = new Gateway(store, { dots: adapter, muse: { ...adapter, info: { ...adapter.info, id: "muse", capabilities: { ...adapter.info.capabilities, chat: false } } } }, auth);
   const account = gateway.create("dots", "Renewable", {
     accessToken: "old-access", refreshToken: "old-refresh", accountId: "workspace",
     threadId: "existing-dot", expiresAt: String(Date.now() + 30_000),

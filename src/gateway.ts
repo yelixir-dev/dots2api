@@ -1,5 +1,5 @@
 import { GatewayError, jobIdSchema } from "./contracts";
-import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId } from "./contracts";
+import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId, ProviderStatus } from "./contracts";
 import { Store } from "./store";
 import type { DotsAuth } from "./dots-auth";
 
@@ -45,6 +45,15 @@ export class Gateway {
   stop(): void { this.shutdown.abort(); }
   async drain(): Promise<void> { await Promise.all([...this.leases]); }
   accounts(): Account[] { return this.store.accounts().map((a) => ({ ...a, busy: this.busy.has(a.id) })); }
+  /** Every registered provider with the operator's on/off switch applied. */
+  providerStatuses(): ProviderStatus[] {
+    const states = this.store.providerStates();
+    return Object.values(this.adapters).map((adapter) => ({ ...adapter.info, enabled: states[adapter.info.id] }));
+  }
+  setProviderEnabled(id: ProviderId, enabled: boolean): void {
+    this.store.setProviderEnabled(id, enabled);
+    this.changed();
+  }
   account(id: AccountId): Account {
     const account = this.store.account(id);
     if (!account) throw new GatewayError("account_not_found", "Account not found.", 404);
@@ -93,6 +102,8 @@ export class Gateway {
       const credentials = adapter.validate(await this.credentials(id, signal));
       const result = await adapter.check(credentials, {
         accountId: id, dataDir: this.store.dataDir, signal,
+        // A check may repair credentials (for example a renewed browser session); persist them without touching status.
+        saveCredentials: (repaired) => { this.store.saveAccount(this.account(id), repaired); },
       });
       return this.store.saveAccount({
         ...account, status: "ready", detail: result.detail, checkedAt: new Date().toISOString(),
@@ -113,6 +124,7 @@ export class Gateway {
         .sort((a, b) => (a.lastUsedAt ?? "").localeCompare(b.lastUsedAt ?? ""))[0];
     if (!account) throw new GatewayError("no_account", "No connected idle account is available for this provider.", 503);
     if (input.provider && account.provider !== input.provider) throw new GatewayError("provider_mismatch", "Account and provider do not match.");
+    if (!this.store.providerEnabled(account.provider)) throw new GatewayError("provider_disabled", `${account.provider} is switched off in the console; no new jobs are routed to it.`, 503);
     if (!account.enabled || account.status !== "ready") throw new GatewayError("account_not_ready", "Enable and check this account before submitting work.", 409);
     if (account.busy) throw new GatewayError("account_busy", "This account already has an active operation.", 409);
     this.adapters[account.provider].validate(this.store.credentials(account.id));
@@ -143,6 +155,7 @@ export class Gateway {
       const credentials = this.adapters[job.provider].validate(await this.credentials(job.accountId, signal));
       const result = await this.adapters[job.provider].run(credentials, job.prompt, {
         accountId: job.accountId, dataDir: this.store.dataDir, signal,
+        saveCredentials: (repaired) => { this.store.saveAccount(this.account(job.accountId), repaired); },
         onAccepted: (id) => {
           remoteId = id;
           this.store.saveJob({ ...job, remoteId });

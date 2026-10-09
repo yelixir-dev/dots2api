@@ -1,12 +1,15 @@
 import type { Hono } from "hono";
 import { z } from "zod";
 import { GatewayError } from "./contracts";
-import type { Job } from "./contracts";
+import type { Job, ProviderId } from "./contracts";
 import type { Gateway } from "./gateway";
 import { buildImagePrompt } from "./image-prompt";
 
 const MAX_N = 4;
-export const IMAGE_MODEL = "dots-image";
+/** Image models this gateway serves and the provider account each one runs on. */
+export const IMAGE_MODELS = { "dots-image": "dots", "muse-image": "muse" } as const satisfies Readonly<Record<string, ProviderId>>;
+export type ImageModelId = keyof typeof IMAGE_MODELS;
+export const IMAGE_MODEL: ImageModelId = "dots-image";
 
 const request = z.strictObject({
   model: z.string().optional(),
@@ -21,24 +24,26 @@ const request = z.strictObject({
   user: z.string().optional(),
 });
 
-function checkModel(model: string | undefined): void {
-  if (model === undefined || model === IMAGE_MODEL || model.startsWith("gpt-image")) return;
-  throw new GatewayError("unsupported_parameter", `Model ${model} is not available; use ${IMAGE_MODEL}.`, 422);
+/** Resolve the requested model to a provider; an omitted model uses the default image model. */
+function imageProvider(model: string | undefined): ProviderId {
+  if (model === undefined || model.startsWith("gpt-image")) return IMAGE_MODELS[IMAGE_MODEL];
+  if (Object.hasOwn(IMAGE_MODELS, model)) return IMAGE_MODELS[model as ImageModelId];
+  throw new GatewayError("unsupported_parameter", `Model ${model} is not available; use ${Object.keys(IMAGE_MODELS).join(" or ")}.`, 422);
 }
 
-/** One generated image per job: each is a separate Dot turn, run one after another on the single Dot thread. */
+/** One generated image per job: each is a separate provider turn, run one after another on that account's single thread. */
 export function attachImageGeneration(app: Hono, gateway: Gateway): void {
   app.post("/v1/images/generations", async (c) => {
     const body = request.parse(await c.req.json());
-    checkModel(body.model);
+    const provider = imageProvider(body.model);
     const origin = new URL(c.req.url).origin;
     const prompt = buildImagePrompt({ prompt: body.prompt, size: body.size, quality: body.quality });
     const data: Array<Record<string, string>> = [];
     const jobIds: string[] = [];
-    let first: { width?: number | undefined; height?: number | undefined } = {};
+    let first: { width?: number | undefined; height?: number | undefined; format?: "png" | "jpeg" | "webp" } = {};
     let failure: GatewayError | undefined;
     for (let index = 0; index < body.n; index++) {
-      const job: Job = gateway.submit({ provider: "dots", prompt });
+      const job: Job = gateway.submit({ provider, prompt });
       jobIds.push(job.id);
       const result = await gateway.wait(job.id);
       if (result.status !== "completed") {
@@ -48,15 +53,18 @@ export function attachImageGeneration(app: Hono, gateway: Gateway): void {
       const image = result.images[0];
       if (!image) {
         const said = result.output.replace(/\s+/g, " ").trim().slice(0, 300);
-        failure = new GatewayError("image_not_generated", `The Dot did not return an image${said ? `: ${said}` : "."}`, 502);
+        failure = new GatewayError("image_not_generated", `The provider did not return an image${said ? `: ${said}` : "."}`, 502);
         break;
       }
-      if (index === 0) first = { width: image.width, height: image.height };
       const stored = gateway.store.image(job.id, 0);
       if (!stored) {
         failure = new GatewayError("image_not_generated", "The generated image could not be read back.", 502);
         break;
       }
+      if (index === 0) first = {
+        width: image.width, height: image.height,
+        format: stored.mime === "image/jpeg" ? "jpeg" : stored.mime === "image/webp" ? "webp" : "png",
+      };
       data.push({
         ...(body.response_format === "b64_json"
           ? { b64_json: Buffer.from(stored.data).toString("base64") }
@@ -75,7 +83,7 @@ export function attachImageGeneration(app: Hono, gateway: Gateway): void {
     return c.json({
       created: Math.floor(Date.now() / 1000),
       data,
-      output_format: "png",
+      output_format: first.format ?? "png",
       ...(first.width && first.height ? { size: `${first.width}x${first.height}` } : {}),
     });
   });

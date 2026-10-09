@@ -1,7 +1,7 @@
 import ky, { HTTPError, TimeoutError } from "ky";
 import { z } from "zod";
 import { accountIdSchema, jobIdSchema, providerIdSchema } from "../../contracts";
-import type { Account, AccountId, CredentialField, Job, JobId, ProviderId, ProviderInfo } from "../../contracts";
+import type { Account, AccountId, CredentialField, Job, JobId, ProviderId, ProviderStatus } from "../../contracts";
 
 const credentialFieldSchema = z.object({
   key: z.string().min(1),
@@ -23,9 +23,11 @@ const providerSchema = z.object({
     nativeTools: z.literal(false),
     usage: z.literal("unknown"),
     execution: z.literal("remote-agent"),
+    chat: z.boolean(),
   }),
   setupUrl: z.string(),
-}) satisfies z.ZodType<ProviderInfo>;
+  enabled: z.boolean(),
+}) satisfies z.ZodType<ProviderStatus>;
 
 const accountSchema = z.object({
   id: accountIdSchema,
@@ -188,9 +190,19 @@ async function read<S extends z.ZodType>(schema: S, request: () => Promise<unkno
 
 const accountPath = (id: AccountId): string => `accounts/${encodeURIComponent(id)}`;
 
-export async function listProviders(): Promise<readonly ProviderInfo[]> {
+export async function listProviders(): Promise<readonly ProviderStatus[]> {
   const body = await read(z.object({ providers: z.array(providerSchema) }), () => http.get("providers").json(), "GET /api/providers");
   return body.providers;
+}
+
+/** The operator's per-provider switch; a disabled provider accepts no new jobs. */
+export async function setProviderEnabled(id: ProviderId, enabled: boolean): Promise<ProviderStatus> {
+  const body = await read(
+    z.object({ provider: providerSchema }),
+    () => http.patch(`providers/${encodeURIComponent(id)}`, { json: { enabled }, retry: 0 }).json(),
+    "PATCH /api/providers/:id",
+  );
+  return body.provider;
 }
 
 export async function listAccounts(): Promise<readonly Account[]> {
@@ -290,4 +302,34 @@ export async function completeDotsLogin(id: AccountId, threadId: string) {
 export async function cancelDotsLogin(id: AccountId): Promise<void> {
   await read(z.object({ ok: z.literal(true) }),
     () => http.post(`${accountPath(id)}/dots-login/cancel`, { retry: 0 }).json(), "Dots login cancel");
+}
+
+const museSessionSchema = z.object({
+  id: z.string().uuid(),
+  accountId: z.string(),
+  state: z.enum(["starting", "active", "completing", "completed", "cancelled", "expired", "failed"]),
+  expiresAt: z.string(),
+  error: z.object({ code: z.string(), message: z.string() }).nullable(),
+});
+export type MuseSession = z.infer<typeof museSessionSchema>;
+
+/** The remote browser login for Muse; the viewer streams over a WebSocket at the `stream` path. */
+export async function getMuseLogin(id: AccountId): Promise<MuseSession | null> {
+  const body = await read(z.object({ session: museSessionSchema.nullable() }),
+    () => http.get(`${accountPath(id)}/muse-login`).json(), "GET Muse login");
+  return body.session;
+}
+export async function startMuseLogin(id: AccountId): Promise<MuseSession> {
+  const body = await read(z.object({ session: museSessionSchema }),
+    () => http.post(`${accountPath(id)}/muse-login/start`, { retry: 0, timeout: false }).json(), "Muse login start");
+  return body.session;
+}
+export async function completeMuseLogin(id: AccountId, sessionId: string): Promise<Account> {
+  const body = await read(z.object({ status: z.literal("connected"), account: accountSchema }),
+    () => http.post(`${accountPath(id)}/muse-login/complete`, { json: { sessionId }, retry: 0, timeout: false }).json(), "Muse login complete");
+  return body.account;
+}
+export async function cancelMuseLogin(id: AccountId, sessionId: string): Promise<void> {
+  await read(z.object({ session: museSessionSchema }),
+    () => http.post(`${accountPath(id)}/muse-login/cancel`, { json: { sessionId }, retry: 0 }).json(), "Muse login cancel");
 }

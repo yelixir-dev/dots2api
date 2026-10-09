@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Account, AccountId, Job, ProviderInfo } from "../../contracts";
+import type { Account, AccountId, Job, ProviderId, ProviderStatus } from "../../contracts";
 import * as api from "./api";
 
 export type LiveState = "connecting" | "open" | "reconnecting" | "closed";
@@ -11,7 +11,7 @@ export interface Resource<T> {
 }
 
 interface ResourceData {
-  readonly providers: readonly ProviderInfo[];
+  readonly providers: readonly ProviderStatus[];
   readonly accounts: readonly Account[];
   readonly jobs: readonly Job[];
 }
@@ -119,6 +119,15 @@ class GatewayStore {
     const data = (this.state.accounts.data ?? []).filter((account) => account.id !== id);
     this.commit({ accounts: { data, error: null, loading: false } });
     void this.sync();
+  }
+
+  async setProviderEnabled(id: ProviderId, enabled: boolean): Promise<ProviderStatus> {
+    const provider = await api.setProviderEnabled(id, enabled);
+    const list = this.state.providers.data ?? [];
+    const data = list.map((item) => (item.id === id ? provider : item));
+    this.tickets.providers += 1;
+    this.commit({ providers: { data, error: null, loading: false } });
+    return provider;
   }
 
   async checkAccount(id: AccountId): Promise<Account> {

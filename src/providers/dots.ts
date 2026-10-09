@@ -12,8 +12,14 @@ const configurationSchema = z.object({
   endpoint: z.url().optional(),
 });
 const threadSchema = z.object({
-  thread: z.object({ id: z.string(), threadSource: z.string().optional() }),
+  thread: z.object({
+    id: z.string(),
+    threadSource: z.string().nullish(),
+    modelProvider: z.string().nullish(),
+    canAcceptDirectInput: z.boolean().nullish(),
+  }),
 });
+const createdThreadSchema = z.object({ thread: z.object({ id: z.string().min(1) }) });
 const turnSchema = z.object({
   turn: z.object({ id: z.string().min(1) }),
 });
@@ -80,10 +86,16 @@ function config(credentials: Credentials): z.infer<typeof configurationSchema> {
   return result.data;
 }
 
+/** Failures that mean the stored thread can no longer serve turns and must be replaced. */
+const REBINDABLE = new Set(["dots_thread_missing", "dots_thread_unverified"]);
+
+/** Tracks whether a submitted turn has left the client; cleared only before a safely retryable submission. */
+type Submission = { mark(): void; clear(): void };
+
 async function withConnection<T>(
   credentials: z.infer<typeof configurationSchema>,
   context: AdapterContext,
-  action: (connection: DotConnection, submitted: () => void) => Promise<T>,
+  action: (connection: DotConnection, submission: Submission) => Promise<T>,
 ): Promise<T> {
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(TIMEOUT_MS)]);
   if (signal.aborted) throw new GatewayError("dots_timeout", "Dot connection ended before submission.", 504);
@@ -107,7 +119,7 @@ async function withConnection<T>(
       throw new GatewayError("dots_protocol", "Dot initialization response was invalid.", 502);
     }
     connection.notify("initialized", {});
-    return await action(connection, () => { sent = true; });
+    return await action(connection, { mark: () => { sent = true; }, clear: () => { sent = false; } });
   } finally {
     connection.close();
   }
@@ -125,17 +137,52 @@ async function turnImages(connection: DotConnection, threadId: string, turnId: s
   });
 }
 
-async function existingThread(connection: DotConnection, threadId: string): Promise<void> {
+async function existingThread(connection: DotConnection, threadId: string, selfProvisioned = false): Promise<void> {
   const read = threadSchema.safeParse(await connection.request("thread/read", { threadId }));
   if (!read.success || read.data.thread.id !== threadId) {
     throw new GatewayError("dots_thread", "Existing Dot thread could not be verified.", 404);
   }
-  if (!read.data.thread.threadSource) {
-    throw new GatewayError("dots_thread_unverified", "Thread response does not identify an Aeon Dot; connection remains unverified.", 502);
-  }
-  if (read.data.thread.threadSource !== "aeon") {
+  const thread = read.data.thread;
+  if (thread.threadSource && thread.threadSource !== "aeon") {
     throw new GatewayError("dots_thread", "Selected thread is not an Aeon Dot thread.", 400);
   }
+  // A thread whose record outlives its agent still answers reads but can never accept a turn again.
+  if (thread.modelProvider === "" || thread.canAcceptDirectInput === false) {
+    throw new GatewayError("dots_thread_missing", "Existing Dot thread has no live agent.", 502);
+  }
+  // A thread without an Aeon source is one this gateway created as a replacement, so its own creation is the
+  // authorization; a different, explicitly labelled source is not ours to drive.
+  if (selfProvisioned || !thread.threadSource) return;
+}
+
+/** Submits one turn and returns the acceptance Dot reported. */
+async function startTurn(
+  connection: DotConnection,
+  threadId: string,
+  prompt: string,
+): Promise<z.infer<typeof turnSchema>> {
+  const started = turnSchema.safeParse(await connection.request("turn/start", {
+    threadId,
+    input: [{ type: "text", text: prompt }],
+  }));
+  if (!started.success) throw new GatewayError("dots_protocol", "Dot did not return a turn ID.", 502, true);
+  return started.data;
+}
+
+/**
+ * A reclaimed Dot thread keeps its record but loses its agent, so no turn can ever be accepted again.
+ * Creating a replacement thread on the same credentials restores the account without a manual reconnect.
+ */
+async function provisionThread(
+  connection: DotConnection,
+  save: (credentials: Credentials) => void,
+  credentials: Credentials,
+): Promise<string> {
+  const created = createdThreadSchema.safeParse(await connection.request("thread/start", {}));
+  if (!created.success) throw new GatewayError("dots_thread", "Dot did not create a replacement thread.", 502);
+  const threadId = created.data.thread.id;
+  save({ ...credentials, threadId, threadOrigin: "self" });
+  return threadId;
 }
 
 export const dotsAdapter: ProviderAdapter = {
@@ -151,37 +198,46 @@ export const dotsAdapter: ProviderAdapter = {
       { key: "threadId", label: "Existing Dot thread ID", help: "Use an existing consumer Dot thread ID; this adapter never creates an Astra thread.", secret: false, required: true },
       { key: "endpoint", label: "WebSocket endpoint", help: "Optional endpoint override; default is the hosted Codex cloud backend.", secret: false, required: false },
     ],
-    capabilities: { nativeTools: false, usage: "unknown", execution: "remote-agent" },
+    capabilities: { nativeTools: false, usage: "unknown", execution: "remote-agent", chat: true },
     setupUrl: "https://developers.openai.com/codex/app-server/",
   },
   validate(credentials) {
     const settings = config(credentials);
-    return { ...settings, endpoint: settings.endpoint ?? DEFAULT_ENDPOINT };
+    return { ...credentials, ...settings, endpoint: settings.endpoint ?? DEFAULT_ENDPOINT };
   },
   async check(credentials, context) {
     const settings = config(credentials);
     return withConnection(settings, context, async (connection) => {
-      await existingThread(connection, settings.threadId);
+      await existingThread(connection, settings.threadId, credentials["threadOrigin"] === "self");
       return { detail: "Existing thread reports Aeon Dot identity; live compatibility and quota remain unverified." };
     });
   },
   async run(credentials, prompt, context) {
     const settings = config(credentials);
     if (!prompt.trim()) throw new GatewayError("dots_prompt", "Prompt must not be empty.");
-    return withConnection(settings, context, async (connection, submitted) => {
-      await existingThread(connection, settings.threadId);
-      const resumed = threadSchema.safeParse(await connection.request("thread/resume", { threadId: settings.threadId }));
-      if (!resumed.success || resumed.data.thread.id !== settings.threadId) {
-        throw new GatewayError("dots_thread", "Dot did not resume the selected thread.", 502);
+    return withConnection(settings, context, async (connection, submission) => {
+      // The selected thread is a consumer Dot and keeps its identity gate; a replacement is trusted by creation.
+      let threadId = settings.threadId;
+      let started: z.infer<typeof turnSchema>;
+      try {
+        await existingThread(connection, threadId, credentials["threadOrigin"] === "self");
+        const resumed = threadSchema.safeParse(await connection.request("thread/resume", { threadId }));
+        if (!resumed.success || resumed.data.thread.id !== threadId) {
+          throw new GatewayError("dots_thread", "Dot did not resume the selected thread.", 502);
+        }
+        // The socket buffers notifications before submission; completion may beat the RPC reply.
+        submission.mark();
+        started = await startTurn(connection, threadId, prompt);
+      } catch (error) {
+        // A live thread without an Aeon source is one this gateway created; a rejected or agentless submission is
+        // never accepted by the agent, so rebinding and retrying once cannot duplicate remote work.
+        if (!(error instanceof GatewayError) || !REBINDABLE.has(error.code) || !context.saveCredentials) throw error;
+        submission.clear();
+        threadId = await provisionThread(connection, context.saveCredentials, credentials);
+        submission.mark();
+        started = await startTurn(connection, threadId, prompt);
       }
-      // The socket buffers notifications before submission; completion may beat the RPC reply.
-      submitted();
-      const started = turnSchema.safeParse(await connection.request("turn/start", {
-        threadId: settings.threadId,
-        input: [{ type: "text", text: prompt }],
-      }));
-      if (!started.success) throw new GatewayError("dots_protocol", "Dot did not return a turn ID.", 502, true);
-      const turnId = started.data.turn.id;
+      const turnId = started.turn.id;
       context.onAccepted?.(turnId);
       const messages = new Map<string, string>();
       const delivered = new Map<string, string>();
@@ -198,19 +254,19 @@ export const dotsAdapter: ProviderAdapter = {
         const event = await connection.next();
         if (event.method === "item/completed") {
           const completedItem = completedItemSchema.safeParse(event.params);
-          if (completedItem.success && completedItem.data.threadId === settings.threadId && completedItem.data.turnId === turnId) {
+          if (completedItem.success && completedItem.data.threadId === threadId && completedItem.data.turnId === turnId) {
             const delivery = deliveredMessageSchema.safeParse(completedItem.data.item);
             if (delivery.success) delivered.set(delivery.data.id, delivery.data.arguments.text);
             noteImage(completedItem.data.item);
           }
           const item = messageSchema.safeParse(event.params);
-          if (item.success && item.data.threadId === settings.threadId && item.data.turnId === turnId) {
+          if (item.success && item.data.threadId === threadId && item.data.turnId === turnId) {
             messages.set(item.data.item.id, item.data.item.text);
           }
         }
         if (event.method !== "turn/completed") continue;
         const completed = completedSchema.safeParse(event.params);
-        if (!completed.success || completed.data.threadId !== settings.threadId || completed.data.turn.id !== turnId) continue;
+        if (!completed.success || completed.data.threadId !== threadId || completed.data.turn.id !== turnId) continue;
         if (completed.data.turn.status !== "completed") {
           throw new GatewayError("dots_turn", "Dot turn finished without successful completion.", 502);
         }
@@ -228,7 +284,7 @@ export const dotsAdapter: ProviderAdapter = {
         if (!text && images.size === 0 && !imageMissing) throw new GatewayError("dots_result", "Dot completed without an agent text response.", 502, true);
         if (imageMissing && images.size === 0) {
           try {
-            for (const image of await turnImages(connection, settings.threadId, turnId)) images.set(`list-${images.size}`, image);
+            for (const image of await turnImages(connection, threadId, turnId)) images.set(`list-${images.size}`, image);
           } catch (error) {
             if (!(error instanceof GatewayError)) throw error;
           }

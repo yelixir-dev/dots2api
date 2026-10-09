@@ -18,14 +18,16 @@
 
 <!-- README-I18N:END -->
 
-**[dots2api](https://github.com/yelixir-dev/dots2api)**("Dot to API")는 내 OpenAI **Dot**을 채팅(`chat/completions`, 도구 호출 포함)과 이미지 생성으로 열어 주는 개인용 게이트웨이이며, 계정·작업 기록·생성한 이미지를 관리하는 웹 콘솔이 함께 있습니다. 모델 ID는 **`dots-agent`**(채팅)와 **`dots-image`**(이미지) 두 가지입니다.
+**[dots2api](https://github.com/yelixir-dev/dots2api)**("Dot to API")는 내 OpenAI **Dot**을 채팅(`chat/completions`, 도구 호출 포함)과 이미지 생성으로 열어 주는 개인용 게이트웨이이며, 계정·작업 기록·생성한 이미지를 관리하는 웹 콘솔이 함께 있습니다. 모델 ID는 **`dots-agent`**(채팅)와 이미지 모델 **`dots-image`**(내 Dot), **`muse-image`**(내 muse.ai 계정)입니다.
 
 [기능](#기능) · [설치](#설치) · [사용법](#사용법) · [동작 방식](#동작-방식) · [저장소 구조](#저장소-구조) · [현재 한계](#현재-한계) · [라이선스](#라이선스)
 
 ## 기능
 
 - **OpenAI 방식 채팅.** `dots-agent`로 `POST /v1/chat/completions`를 호출하며, `tools`와 `tool_choice`는 프롬프트 기반 JSON 브리지로 동작하고 반환된 호출은 클라이언트(예: OmO)가 실행합니다.
-- **이미지 생성.** `dots-image`로 `POST /v1/images/generations`를 호출하며 `prompt`, `n`(1~4), `size`, `quality`, `response_format`(`b64_json` 또는 `url`)을 받고, 파일은 서명으로 판별해 PNG/JPEG/WebP만 장당 32 MiB 이하로 받습니다.
+- **이미지 생성.** `dots-image` 또는 `muse-image`로 `POST /v1/images/generations`를 호출하며 `prompt`, `n`(1~4), `size`, `quality`, `response_format`(`b64_json` 또는 `url`)을 받고, 파일은 서명으로 판별해 PNG/JPEG/WebP만 장당 32 MiB 이하로 받습니다. `dots-image`는 Dot이, `muse-image`는 격리된 Chrome 프로파일에서 내 muse.ai 계정이 생성하며(Node.js 22 이상과 Chromium 필요) 보통 WebP를 돌려줍니다.
+- **공급자·계정 스위치.** 계정마다 자체 활성 스위치가 있고, 공급자(Dots, Muse)마다 저장된 자격 증명은 그대로 둔 채 새 작업이 그 공급자로 가지 않게 하는 상위 스위치가 있습니다.
+- **자가 복구.** Dot 스레드가 에이전트를 잃은 계정은 새 스레드로 스스로 다시 묶이고, muse.ai 세션이 만료됐거나 클라우드 작업 VM이 잠든 계정은 실행 전에 세션을 갱신하고 VM을 깨워 원격 리셋·서버 재부팅 뒤에도 다시 정상화됩니다.
 - **웹 콘솔.** 루프백에서 열리는 React 콘솔로 계정, 작업, 이미지 미리보기가 있는 작업 상세, 로컬 API 키와 OmO `models.json` 예시를 보여 주는 API 안내를 제공합니다.
 - **기기 인증 로그인.** `auth.openai.com/codex/device`에서 승인하며 다른 컴퓨터의 브라우저도 됩니다. 토큰은 서버에만 두고 AES-256-GCM으로 암호화하며 만료 60초 전에 갱신합니다.
 - **계정당 작업 하나.** 이미 작업 중인 계정은 `409 account_busy`, 쓸 수 있는 계정이 없으면 `503`이어서 동시 요청이 한 Dot 스레드를 나눠 쓰지 않습니다.
@@ -64,7 +66,7 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 
 ### 데이터
 
-- `dots2api.sqlite`: 계정 메타데이터, 작업, 로컬 API 키. 이전 `bot2api.sqlite`가 있으면 처음 실행할 때 이 이름으로 옮기고, 그 안의 **Muse/Grok 계정·작업·이미지와 `muse/` 브라우저 프로파일은 삭제**합니다.
+- `dots2api.sqlite`: 계정 메타데이터, 작업, 로컬 API 키. 이전 `bot2api.sqlite`가 있으면 처음 실행할 때 이 이름으로 옮기고, 그 안의 **Grok Bot 계정·작업·이미지는 삭제**하며 Muse·Dots 데이터는 유지합니다.
 - `master.key`: 자격 증명 암호화 키. DB와 함께 보관해야 계정을 복원할 수 있습니다.
 - `images/`: 생성한 이미지이며 자동 삭제는 없습니다.
 - 프롬프트와 결과, 이미지도 민감할 수 있으니 데이터 디렉터리를 공유하거나 Git에 넣지 마세요.
@@ -78,6 +80,21 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 3. dots2api는 스레드를 새로 만들지 않으며 `threadSource: aeon`이 확인되지 않으면 연결하지 않습니다. 연결 전에 취소하면 만들다 만 계정은 삭제됩니다.
 
 토큰은 브라우저에 돌려주지 않습니다. 갱신이 철회되었거나 결과를 확인하지 못하면 다시 로그인하세요. **같은 refresh token을 Codex CLI 등 다른 곳과 공유하지 마세요.** access token을 직접 입력하는 방식(같은 창의 링크)도 되지만 refresh token이 없으면 자동 갱신하지 못합니다. 이미 있는 계정은 **로그인** 버튼으로 다시 로그인할 수 있습니다. 자세한 계약은 [`src/dots-auth/README.md`](src/dots-auth/README.md)에 있습니다.
+
+### Muse 계정 연결
+
+Muse는 공식 OAuth 앱이 없어 muse.ai에 로그인한 세션을 유지하는 방식으로 연결합니다. 콘솔에서 **Muse** 계정을 추가한 뒤 둘 중 하나를 씁니다.
+
+- **원격 브라우저(가장 쉬움, 헤드리스 서버에서도 동작).** 계정의 **로그인 → 원격 브라우저 시작**을 누르면 서버가 전용 가상 화면(Xvfb)에 실제 Chromium을 띄우고 그 화면을 콘솔로 실시간 전송합니다. 그 화면에서 바로 Google 로그인을 마치고 **로그인 완료 및 연결 확인**을 누르세요. 뷰어는 콘솔과 같은 포트로 흘러 추가 SSH 터널이 필요 없습니다.
+  새 헤드리스 서버(예: Oracle Cloud)에서는 두 의존성을 루트로 한 번 설치하세요.
+  ```bash
+  sudo apt install -y xvfb        # Debian/Ubuntu; Oracle Linux는: sudo dnf install -y xorg-x11-server-Xvfb
+  bunx playwright install --with-deps chromium
+  ```
+  `--with-deps`가 Chromium의 공유 라이브러리까지 받아 줍니다. 서비스 `PATH`에 `Xvfb`가 없으면 `PATH`를 맞추거나 `/usr/bin`에 설치하세요(런처는 `Bun.which("Xvfb")`로 찾습니다).
+- **쿠키 가져오기.** 본인 브라우저에서 muse.ai에 로그인한 뒤 DevTools → Network에서 `muse.ai` 요청을 골라 `Cookie` 요청 헤더를 계정의 **Cookie header**에 붙여넣거나, 내보낸 쿠키 JSON을 **Cookies JSON**에 넣고 **저장하고 확인**을 누릅니다.
+
+두 방식 모두 갱신된 세션 쿠키를 계정에 다시 저장하며, 매 작업 전에 Muse 자가복구가 세션을 갱신하고 작업 VM을 깨웁니다.
 
 ### 채팅
 

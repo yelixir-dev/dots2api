@@ -177,6 +177,12 @@ else
 fi
 
 log "dots2api is running at $URL"
-log "Open the console to connect your Dot account; the local API key is under 'API 안내'."
+log "Open the console to connect your account; the local API key is under 'API 안내'."
+if ! command -v node >/dev/null 2>&1; then
+  log "Note: the 'muse-image' model also needs Node.js 22 or newer and Chromium; 'dots-image' works without them."
+fi
+if ! command -v Xvfb >/dev/null 2>&1; then
+  log "Note: adding a Muse account through the console's remote browser also needs Xvfb; cookie import works without it."
+fi
 log "Logs: journalctl --user -u dots2api -f   |   Remove: systemctl --user disable --now dots2api"
 log "To keep it running without a login session: sudo loginctl enable-linger \"$USER\""

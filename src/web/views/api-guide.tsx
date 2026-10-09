@@ -66,12 +66,13 @@ function Guide({ settings, models, onReloadModels }: GuideProps) {
     "EOF",
   ].join("\n");
   const imageSnippet = [
+    "export IMAGE_MODEL=dots-image   # muse-image 로 바꾸면 본인 muse.ai 계정으로 생성합니다",
     'curl -sS "$DOTS2API_URL/images/generations" \\',
     '  -H "Authorization: Bearer $DOTS2API_KEY" \\',
     '  -H "Content-Type: application/json" \\',
     "  -d @- <<EOF | jq -r '.data[0].b64_json' | base64 -d > out.png",
     "{",
-    '  "model": "dots-image",',
+    '  "model": "$IMAGE_MODEL",',
     '  "prompt": "해변을 달리는 은색 스포츠카, 실사 사진, 골든아워",',
     '  "size": "1536x1024",',
     '  "quality": "high"',
@@ -195,11 +196,15 @@ function Guide({ settings, models, onReloadModels }: GuideProps) {
             <strong>응답 시간</strong> 원격 작업이 끝난 뒤 응답하며 최대 약 5분 걸릴 수 있습니다. 클라이언트 타임아웃을 넉넉하게 두세요.
           </li>
           <li>
-            <strong>계정 선택</strong> 활성·준비됨·유휴 Dot 계정 중 가장 오래 쉰 계정이 실행합니다. 없으면 503(no_account)입니다.
+            <strong>계정 선택</strong> 활성·준비됨·유휴 공급자 계정 중 가장 오래 쉰 계정이 실행합니다. 없으면 503(no_account)입니다.
           </li>
           <li>
-            <strong>이미지 생성</strong> POST /v1/images/generations는 Dot에게 이미지를 만들어 달라고 요청한 뒤 받은 PNG를 b64_json 또는 url로 돌려줍니다. n은 1~4이며 한 장씩 차례로 만들어
-            장당 약 1분 걸립니다. size와 quality는 Dot이 지키도록 말로 요청하는 참고값이라 결과 크기가 다를 수 있습니다(응답의 size에 실제 크기). 이미지 파일은 data/images에 남고 작업 상세에서 볼 수 있습니다.
+            <strong>공급자 스위치</strong> 개요 화면의 공급자 스위치로 Dots나 Muse 전체를 끌 수 있습니다. 꺼진 공급자로는 새 작업이 가지 않고, 그 모델을 호출하면 503(provider_disabled)을 돌려줍니다. 이미 실행 중인 작업은 끝까지 진행됩니다.
+          </li>
+          <li>
+            <strong>이미지 생성</strong> POST /v1/images/generations는 공급자에게 이미지를 만들어 달라고 요청한 뒤 받은 파일을 b64_json 또는 url로 돌려줍니다. model은 dots-image(내 Dot) 또는
+            muse-image(내 muse.ai 계정)이며, 생략하면 dots-image입니다. n은 1~4이고 한 장씩 차례로 만들어 장당 약 1분 걸립니다. size와 quality는 공급자가 지키도록 말로 요청하는 참고값이라 결과 크기가
+            다를 수 있습니다(응답의 size에 실제 크기, output_format에 실제 형식). 이미지 파일은 data/images에 남고 작업 상세에서 볼 수 있습니다.
           </li>
           <li>
             <strong>도구 호출</strong> tools와 tool_choice는 프롬프트 기반 JSON 브리지로 지원합니다. 원격 에이전트가 작성한 호출을 OpenAI tool_calls로 돌려주며 실행은 OmO 같은 클라이언트가
