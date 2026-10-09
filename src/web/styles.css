@@ -1677,6 +1677,41 @@ svg.lucide {
   box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--accent);
 }
 
+.muse-stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.muse-stage__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.muse-stage__hint {
+  margin-right: auto;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+/* The drawer is a modal dialog in the top layer; a fixed stage inside it covers the whole viewport. */
+.muse-stage--expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--surface);
+}
+
+/* Largest 8:5 box that fits under the toolbar; the canvas keeps its aspect-ratio, so pointer mapping stays exact. */
+.muse-stage--expanded .muse-viewer {
+  width: min(100%, calc((100dvh - 5.5rem) * 8 / 5));
+  margin: 0 auto;
+}
+
 .provider-row__desc {
   margin-top: var(--space-1);
   color: var(--ink-3);
@@ -1998,6 +2033,42 @@ svg.lucide {
   color: var(--ink-3);
   font-size: var(--text-meta);
   line-height: var(--lh-meta);
+}
+
+.choice--action {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  border-width: 0 0 1px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.choice--action svg {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  color: var(--ink-3);
+}
+
+.choice--action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.advanced__summary {
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.advanced__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
 }
 
 /* Jobs */

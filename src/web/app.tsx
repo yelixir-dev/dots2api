@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, KeyRound, LayoutDashboard, ListChecks, Moon, RefreshCw, Sun } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { Account } from "../contracts";
+import type { Account, ProviderId } from "../contracts";
 import { ToastRegion } from "./components/toast-region";
 import { Button, IconButton, Notice } from "./components/ui";
 import { ConsoleActionsContext } from "./lib/actions";
@@ -12,7 +12,7 @@ import type { Route, View } from "./lib/router";
 import { gateway, useGateway } from "./lib/store";
 import { useTheme } from "./lib/theme";
 import type { LiveState } from "./lib/store";
-import { AccountDrawer, DeleteAccountDialog } from "./views/account-dialogs";
+import { AccountDrawer, DeleteAccountDialog, ProviderChoiceDrawer } from "./views/account-dialogs";
 import { AccountsView } from "./views/accounts";
 import { ApiGuideView } from "./views/api-guide";
 import { DotsConnectDrawer } from "./views/dots-connect";
@@ -35,6 +35,16 @@ const LIVE_TEXT: Readonly<Record<LiveState, string>> = {
 };
 
 const LIVE_TONE = { connecting: "warn", open: "ok", reconnecting: "warn", closed: "danger" } as const satisfies Record<LiveState, string>;
+
+/** Each provider adds accounts through its own login; without a provider the user picks one first. */
+function connectEditor(provider: ProviderId | undefined): EditorState {
+  switch (provider) {
+    case "dots": return { mode: "connect" };
+    case "muse": return { mode: "muse-connect" };
+    case undefined: return { mode: "choose" };
+    default: return provider satisfies never;
+  }
+}
 
 function ViewSwitch({ route }: { readonly route: Route }) {
   switch (route.view) {
@@ -68,12 +78,7 @@ export function App() {
 
   const actions = useMemo<ConsoleActions>(
     () => ({
-      openCreateAccount: (provider) =>
-        provider === "dots"
-          ? setEditor({ mode: "connect" })
-          : provider === "muse"
-            ? setEditor({ mode: "muse-connect" })
-            : setEditor({ mode: "create", provider: provider ?? null }),
+      openCreateAccount: (provider) => setEditor(connectEditor(provider)),
       openEditAccount: (account) => setEditor({ mode: "edit", account }),
       requestDeleteAccount: (account) => setDeleting(account),
     }),
@@ -171,15 +176,10 @@ export function App() {
           <ViewSwitch route={route} />
         </main>
       </div>
-      {editor?.mode === "connect" ? <DotsConnectDrawer onClose={() => setEditor(null)} onManual={() => setEditor({ mode: "create", provider: "dots" })} /> : null}
+      {editor?.mode === "choose" ? <ProviderChoiceDrawer onChoose={(provider) => setEditor(connectEditor(provider))} onClose={() => setEditor(null)} /> : null}
+      {editor?.mode === "connect" ? <DotsConnectDrawer onClose={() => setEditor(null)} /> : null}
       {editor?.mode === "muse-connect" ? <MuseConnectDrawer onClose={() => setEditor(null)} /> : null}
-      {editor && editor.mode !== "connect" && editor.mode !== "muse-connect" ? (
-        <AccountDrawer
-          key={editor.mode === "edit" ? editor.account.id : `create:${editor.provider ?? "any"}`}
-          editor={editor}
-          onClose={() => setEditor(null)}
-        />
-      ) : null}
+      {editor?.mode === "edit" ? <AccountDrawer key={editor.account.id} account={editor.account} onClose={() => setEditor(null)} /> : null}
       {deleting ? <DeleteAccountDialog account={deleting} onClose={() => setDeleting(null)} /> : null}
       <ToastRegion />
     </ConsoleActionsContext>

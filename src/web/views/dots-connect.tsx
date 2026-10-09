@@ -19,7 +19,7 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-export function DotsConnectDrawer({ onClose, onManual }: { readonly onClose: () => void; readonly onManual: () => void }) {
+export function DotsConnectDrawer({ onClose }: { readonly onClose: () => void }) {
   const [label, setLabel] = useState("");
   const [thread, setThread] = useState("");
   const [labelError, setLabelError] = useState<string | null>(null);
@@ -165,11 +165,6 @@ export function DotsConnectDrawer({ onClose, onManual }: { readonly onClose: () 
           </>
         ) : null}
         <div role="alert">{error ? <Notice tone="danger">{error}</Notice> : null}</div>
-        {!waiting && !account ? (
-          <p className="section-note">
-            이미 발급한 토큰이 있다면 <button type="button" className="link" onClick={onManual}>토큰을 직접 입력</button>해 추가할 수도 있습니다.
-          </p>
-        ) : null}
         <p className="section-note">인증값은 서버에서 암호화해 저장합니다. 갱신 가능한 계정은 작업 전에 토큰을 갱신하며, 철회되면 다시 로그인해야 합니다.</p>
       </form>
     </Drawer>

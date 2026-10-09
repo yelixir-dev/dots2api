@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Maximize2, Minimize2 } from "lucide-react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react";
 import type { Account } from "../../contracts";
 import { Drawer } from "../components/dialog";
@@ -33,6 +34,7 @@ export function MuseLoginPanel({ account, autostart = false, onConnected, onClos
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(!autostart);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const sizeRef = useRef(DEFAULT_SIZE);
@@ -153,19 +155,54 @@ export function MuseLoginPanel({ account, autostart = false, onConnected, onClos
         </Notice>
       ) : null}
       {running ? (
-        <canvas
-          ref={canvasRef}
-          className="muse-viewer"
-          tabIndex={0}
-          aria-label="원격 로그인 화면"
-          width={DEFAULT_SIZE.width}
-          height={DEFAULT_SIZE.height}
-          onMouseDown={(event) => { canvasRef.current?.focus(); const p = point(event); send({ t: "mouse", type: "down", ...p, button: "left", clickCount: 1, buttons: 1 }); }}
-          onMouseUp={(event) => { const p = point(event); send({ t: "mouse", type: "up", ...p, button: "left", clickCount: 1, buttons: 0 }); }}
-          onMouseMove={(event) => { const p = point(event); send({ t: "mouse", type: "move", ...p, buttons: event.buttons }); }}
-          onWheel={(event) => { const p = point(event); send({ t: "wheel", ...p, dx: event.deltaX, dy: event.deltaY }); }}
-          onKeyDown={key}
-        />
+        // The same canvas switches between the drawer and a window-filling stage, so the stream and focus survive.
+        <div
+          className={expanded ? "muse-stage muse-stage--expanded" : "muse-stage"}
+          onKeyDown={(event) => {
+            // Outside the canvas, Escape leaves the large view first instead of closing the whole drawer.
+            if (expanded && event.key === "Escape" && event.target !== canvasRef.current) {
+              event.preventDefault();
+              event.stopPropagation();
+              setExpanded(false);
+            }
+          }}
+        >
+          <div className="muse-stage__bar">
+            <span className="muse-stage__hint">{expanded ? "크게 보기 중" : "화면이 작으면 크게 보세요."}</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+              aria-pressed={expanded}
+              onClick={() => { setExpanded((value) => !value); requestAnimationFrame(() => canvasRef.current?.focus()); }}
+            >
+              {expanded ? "작게 보기" : "크게 보기"}
+            </Button>
+            {expanded ? (
+              <>
+                <Button size="sm" disabled={busy} onClick={() => void cancel()}>
+                  세션 취소
+                </Button>
+                <Button size="sm" variant="primary" loading={busy} onClick={() => void complete()}>
+                  로그인 완료 및 연결 확인
+                </Button>
+              </>
+            ) : null}
+          </div>
+          <canvas
+            ref={canvasRef}
+            className="muse-viewer"
+            tabIndex={0}
+            aria-label="원격 로그인 화면"
+            width={DEFAULT_SIZE.width}
+            height={DEFAULT_SIZE.height}
+            onMouseDown={(event) => { canvasRef.current?.focus(); const p = point(event); send({ t: "mouse", type: "down", ...p, button: "left", clickCount: 1, buttons: 1 }); }}
+            onMouseUp={(event) => { const p = point(event); send({ t: "mouse", type: "up", ...p, button: "left", clickCount: 1, buttons: 0 }); }}
+            onMouseMove={(event) => { const p = point(event); send({ t: "mouse", type: "move", ...p, buttons: event.buttons }); }}
+            onWheel={(event) => { const p = point(event); send({ t: "wheel", ...p, dx: event.deltaX, dy: event.deltaY }); }}
+            onKeyDown={key}
+          />
+        </div>
       ) : (
         <p className="section-note">화면을 클릭하면 키보드 입력이 원격 브라우저로 전달됩니다. 뷰어는 이 콘솔과 같은 포트를 쓰므로 추가 SSH 터널이 필요 없습니다.</p>
       )}

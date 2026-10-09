@@ -5,11 +5,12 @@ import { accountStatusLabel } from "./format";
 import { gateway } from "./store";
 import { notify } from "./toast";
 
-export type AccountEditor =
-  | { readonly mode: "create"; readonly provider: ProviderId | null }
+/** Adding an account always goes through a provider's own login; stored credentials are edited separately. */
+export type EditorState =
+  | { readonly mode: "choose" }
+  | { readonly mode: "connect" }
+  | { readonly mode: "muse-connect" }
   | { readonly mode: "edit"; readonly account: Account };
-
-export type EditorState = AccountEditor | { readonly mode: "connect" } | { readonly mode: "muse-connect" };
 
 export interface ConsoleActions {
   readonly openCreateAccount: (provider?: ProviderId) => void;

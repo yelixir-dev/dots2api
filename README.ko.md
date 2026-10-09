@@ -79,20 +79,20 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 2. 표시된 ChatGPT 링크(`auth.openai.com/codex/device`)를 열고 일회용 코드를 승인합니다. 브라우저는 서버가 아닌 다른 컴퓨터에 있어도 됩니다. 콘솔이 승인 여부를 확인하다가 스스로 연결을 마치므로 더 누를 것이 없습니다.
 3. dots2api는 스레드를 새로 만들지 않으며 `threadSource: aeon`이 확인되지 않으면 연결하지 않습니다. 연결 전에 취소하면 만들다 만 계정은 삭제됩니다.
 
-토큰은 브라우저에 돌려주지 않습니다. 갱신이 철회되었거나 결과를 확인하지 못하면 다시 로그인하세요. **같은 refresh token을 Codex CLI 등 다른 곳과 공유하지 마세요.** access token을 직접 입력하는 방식(같은 창의 링크)도 되지만 refresh token이 없으면 자동 갱신하지 못합니다. 이미 있는 계정은 **로그인** 버튼으로 다시 로그인할 수 있습니다. 자세한 계약은 [`src/dots-auth/README.md`](src/dots-auth/README.md)에 있습니다.
+토큰은 브라우저에 돌려주지 않습니다. 갱신이 철회되었거나 결과를 확인하지 못하면 다시 로그인하세요. **같은 refresh token을 Codex CLI 등 다른 곳과 공유하지 마세요.** 이미 있는 계정은 **로그인** 버튼으로 다시 로그인할 수 있습니다. 자세한 계약은 [`src/dots-auth/README.md`](src/dots-auth/README.md)에 있습니다.
 
 ### Muse 계정 연결
 
-Muse는 공식 OAuth 앱이 없어 muse.ai에 로그인한 세션을 유지하는 방식으로 연결합니다. 콘솔에서 **Muse** 계정을 추가한 뒤 둘 중 하나를 씁니다.
+Muse는 공식 OAuth 앱이 없어 muse.ai에 로그인한 세션을 유지하는 방식으로 연결합니다. 콘솔에서 **계정 → 계정 추가 → Muse**를 고르고 라벨을 입력하면 아래 원격 브라우저가 바로 열립니다. 쿠키 입력 칸은 계정 편집의 고급 항목으로만 남아 있습니다.
 
-- **원격 브라우저(가장 쉬움, 헤드리스 서버에서도 동작).** 계정의 **로그인 → 원격 브라우저 시작**을 누르면 서버가 전용 가상 화면(Xvfb)에 실제 Chromium을 띄우고 그 화면을 콘솔로 실시간 전송합니다. 그 화면에서 바로 Google 로그인을 마치고 **로그인 완료 및 연결 확인**을 누르세요. 뷰어는 콘솔과 같은 포트로 흘러 추가 SSH 터널이 필요 없습니다.
+- **원격 브라우저(기본, 헤드리스 서버에서도 동작).** Muse 계정을 추가하면 바로 시작되고, 이미 있는 계정은 **로그인 → 원격 브라우저 시작**을 누르면 서버가 전용 가상 화면(Xvfb)에 실제 Chromium을 띄우고 그 화면을 콘솔로 실시간 전송합니다. 화면이 작으면 **크게 보기**로 창 전체에 띄운 뒤, 그 화면에서 Google 로그인을 마치고 **로그인 완료 및 연결 확인**을 누르세요. 뷰어는 콘솔과 같은 포트로 흘러 추가 SSH 터널이 필요 없습니다.
   새 헤드리스 서버(예: Oracle Cloud)에서는 두 의존성을 루트로 한 번 설치하세요.
   ```bash
   sudo apt install -y xvfb        # Debian/Ubuntu; Oracle Linux는: sudo dnf install -y xorg-x11-server-Xvfb
   bunx playwright install --with-deps chromium
   ```
   `--with-deps`가 Chromium의 공유 라이브러리까지 받아 줍니다. 서비스 `PATH`에 `Xvfb`가 없으면 `PATH`를 맞추거나 `/usr/bin`에 설치하세요(런처는 `Bun.which("Xvfb")`로 찾습니다).
-- **쿠키 가져오기.** 본인 브라우저에서 muse.ai에 로그인한 뒤 DevTools → Network에서 `muse.ai` 요청을 골라 `Cookie` 요청 헤더를 계정의 **Cookie header**에 붙여넣거나, 내보낸 쿠키 JSON을 **Cookies JSON**에 넣고 **저장하고 확인**을 누릅니다.
+- **쿠키 가져오기.** 본인 브라우저에서 muse.ai에 로그인한 뒤 DevTools → Network에서 `muse.ai` 요청을 골라 계정의 **편집 → 고급: 인증값 직접 입력**을 열어 `Cookie` 요청 헤더를 **Cookie header**에 붙여넣거나, 내보낸 쿠키 JSON을 **Cookies JSON**에 넣고 **저장하고 확인**을 누릅니다.
 
 두 방식 모두 갱신된 세션 쿠키를 계정에 다시 저장하며, 매 작업 전에 Muse 자가복구가 세션을 갱신하고 작업 VM을 깨웁니다.
 

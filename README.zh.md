@@ -79,20 +79,20 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 2. 打开显示的 ChatGPT 链接（`auth.openai.com/codex/device`）并批准一次性代码。浏览器可以在与服务器不同的电脑上。控制台会轮询批准结果并自动完成连接，无需再点击。
 3. dots2api 从不创建线程，除非线程报告 `threadSource: aeon`，否则拒绝连接。如果在连接成功前取消，创建了一半的账号会被删除。
 
-令牌绝不会返回给浏览器。如果刷新被撤销或结果未知，请重新登录。**不要与 Codex CLI 或其他工具共用同一个 refresh token。** 也可以手动输入 access token（同一对话框中的链接），但没有 refresh token 就无法刷新。已有账号仍可通过其**登录**按钮重新登录。完整约定见 [`src/dots-auth/README.md`](src/dots-auth/README.md)。
+令牌绝不会返回给浏览器。如果刷新被撤销或结果未知，请重新登录。**不要与 Codex CLI 或其他工具共用同一个 refresh token。** 已有账号仍可通过其**登录**按钮重新登录。完整约定见 [`src/dots-auth/README.md`](src/dots-auth/README.md)。
 
 ### 连接 Muse 账号
 
-Muse 没有官方 OAuth 应用，因此通过保持 muse.ai 的登录会话来连接。在控制台中添加一个 **Muse** 账号后，任选其一：
+Muse 没有官方 OAuth 应用，因此通过保持 muse.ai 的登录会话来连接。在控制台选择 **账号 → 添加账号 → Muse** 并输入标签，下面的远程浏览器会直接打开。Cookie 字段仅作为编辑账号时的高级备用项保留。
 
-- **远程浏览器（最简单，无头服务器也可用）。** 在账号上点开 **登录 → 启动远程浏览器**。服务器会在专用虚拟显示（Xvfb）上打开真正的 Chromium，并把画面实时传到控制台，你可以直接在其中完成 Google 登录，然后点击 **完成登录并检查连接**。查看器走控制台自己的端口，无需额外的 SSH 隧道。
+- **远程浏览器（默认，无头服务器也可用）。** 添加 Muse 账号时会直接启动；已有账号可点开 **登录 → 启动远程浏览器**。服务器会在专用虚拟显示（Xvfb）上打开真正的 Chromium，并把画面实时传到控制台，画面太小时可用 **放大查看** 铺满窗口，在其中完成 Google 登录后点击 **完成登录并检查连接**。查看器走控制台自己的端口，无需额外的 SSH 隧道。
   在新的无头服务器（例如 Oracle Cloud）上，用 root 安装一次这两个依赖：
   ```bash
   sudo apt install -y xvfb        # Debian/Ubuntu；Oracle Linux 用：sudo dnf install -y xorg-x11-server-Xvfb
   bunx playwright install --with-deps chromium
   ```
   `--with-deps` 会一并安装 Chromium 的共享库。如果服务的 `PATH` 里没有 `Xvfb`，请调整 `PATH` 或安装到 `/usr/bin`（启动器用 `Bun.which("Xvfb")` 查找）。
-- **导入 Cookie。** 在你自己的浏览器登录 muse.ai，打开 DevTools → Network，选一个 `muse.ai` 请求，把它的 `Cookie` 请求头粘贴到账号的 **Cookie header** 字段（或把导出的 cookie JSON 粘到 **Cookies JSON**），然后点 **保存并检查**。
+- **导入 Cookie。** 在你自己的浏览器登录 muse.ai，打开 DevTools → Network，选一个 `muse.ai` 请求，打开账号的 **编辑 → 高级：手动输入凭据**，把它的 `Cookie` 请求头粘贴到 **Cookie header**（或把导出的 cookie JSON 粘到 **Cookies JSON**），然后点 **保存并检查**。
 
 两种方式都会把续期后的会话 Cookie 写回账号，Muse 自愈会在每次任务前续签会话并唤醒工作 VM。
 

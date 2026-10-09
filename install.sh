@@ -82,6 +82,24 @@ if [ "$BUN_MAJOR" -lt "$MIN_BUN_MAJOR" ] || { [ "$BUN_MAJOR" -eq "$MIN_BUN_MAJOR
   fail "bun >= $MIN_BUN_MAJOR.$MIN_BUN_MINOR is required; found $BUN_VERSION"
 fi
 
+# The Muse browser worker runs under `node`, so the service unit needs the directory node lives in:
+# a user systemd service does NOT inherit the login shell PATH that this script was run from.
+NODE_BIN="$(command -v node || true)"
+NODE_DIR=""
+NODE_VERSION=""
+NODE_MAJOR=""
+if [ -n "$NODE_BIN" ]; then
+  NODE_DIR="$(dirname "$NODE_BIN")"
+  NODE_VERSION="$("$NODE_BIN" --version 2>/dev/null || true)"
+  NODE_MAJOR="${NODE_VERSION#v}"
+  NODE_MAJOR="${NODE_MAJOR%%.*}"
+  case "$NODE_MAJOR" in *[!0-9]*|'') NODE_MAJOR="" ;; esac
+fi
+SERVICE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+if [ -n "$NODE_DIR" ]; then
+  SERVICE_PATH="$NODE_DIR:$SERVICE_PATH"
+fi
+
 command -v systemctl >/dev/null 2>&1 || fail "required command not found: systemctl"
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,7 +121,7 @@ if [ -e "$INSTALL_DIR" ] && [ ! -f "$INSTALL_MARKER" ]; then
 fi
 
 # systemd treats quotes, backslash, % and $ specially in unit values.
-for value in "$BUN_BIN" "$INSTALL_DIR" "$DATA_DIR"; do
+for value in "$BUN_BIN" "$INSTALL_DIR" "$DATA_DIR" "$SERVICE_PATH"; do
   case "$value" in
     *[\"\\%\$]*|*[[:space:]]*) fail "path contains characters unsafe for a systemd unit: $value" ;;
   esac
@@ -143,6 +161,7 @@ ExecStart=$BUN_BIN src/server.ts
 Environment="NODE_ENV=production"
 Environment="PORT=$PORT"
 Environment="DOTS2API_DATA_DIR=$DATA_DIR"
+Environment="PATH=$SERVICE_PATH"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60
@@ -178,8 +197,10 @@ fi
 
 log "dots2api is running at $URL"
 log "Open the console to connect your account; the local API key is under 'API 안내'."
-if ! command -v node >/dev/null 2>&1; then
+if [ -z "$NODE_MAJOR" ]; then
   log "Note: the 'muse-image' model also needs Node.js 22 or newer and Chromium; 'dots-image' works without them."
+elif [ "$NODE_MAJOR" -lt 22 ]; then
+  log "Note: found Node.js $NODE_VERSION at $NODE_BIN, but 'muse-image' needs 22 or newer; 'dots-image' works without it."
 fi
 if ! command -v Xvfb >/dev/null 2>&1; then
   log "Note: adding a Muse account through the console's remote browser also needs Xvfb; cookie import works without it."

@@ -34,6 +34,24 @@ function workerProgram(): Promise<string> {
   return program;
 }
 
+// A service manager's PATH is not the interactive shell's PATH, so report a missing or too-old node
+// as the runtime problem it is instead of blaming the user's Node.js installation.
+let resolvedNode: string | undefined;
+function nodeBinary(): string {
+  if (resolvedNode) return resolvedNode;
+  const node = Bun.which("node");
+  if (!node) {
+    throw new GatewayError("muse_runtime", "The Muse browser worker needs Node.js 22 or newer, but no \"node\" was found on the gateway service PATH.", 503);
+  }
+  const version = new TextDecoder().decode(Bun.spawnSync([node, "-v"], { stdout: "pipe" }).stdout).trim();
+  const major = Number(/^v?(\d+)/.exec(version)?.[1] ?? "");
+  if (!Number.isInteger(major) || major < 22) {
+    throw new GatewayError("muse_runtime", `The Muse browser worker needs Node.js 22 or newer, but the gateway service PATH provides Node.js ${version || node}.`, 503);
+  }
+  resolvedNode = node;
+  return node;
+}
+
 async function callWorker(
   operation: "check" | "run",
   site: string,
@@ -42,8 +60,7 @@ async function callWorker(
   prompt: string,
   context: AdapterContext,
 ): Promise<Terminal> {
-  const node = Bun.which("node");
-  if (!node) throw new GatewayError("muse_runtime", "Node.js 22 or newer is required for the Muse browser worker.", 503);
+  const node = nodeBinary();
   if (context.signal.aborted) throw new GatewayError("muse_cancelled", "Muse operation cancelled.", 409);
   const child = Bun.spawn([node, "--input-type=module", "--eval", await workerProgram()], {
     cwd: fileURLToPath(new URL("../../", import.meta.url)),

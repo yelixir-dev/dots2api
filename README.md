@@ -79,20 +79,20 @@ ssh -N -L 3010:127.0.0.1:3010 user@server
 2. Open the shown ChatGPT link (`auth.openai.com/codex/device`) and approve the one-time code. The browser may be on a different computer from the server. The console polls for the approval and finishes the connection by itself; no further click is needed.
 3. dots2api never creates a thread and refuses to connect unless the thread reports `threadSource: aeon`. If you cancel before it connects, the half-created account is removed.
 
-Tokens are never returned to the browser. If a refresh is revoked or its result is unknown, log in again. **Do not share the same refresh token with Codex CLI or anything else.** Entering an access token by hand (the link in the same dialog) also works but cannot refresh without a refresh token. An existing account can still be logged in again from its **Login** button. The full contract is in [`src/dots-auth/README.md`](src/dots-auth/README.md).
+Tokens are never returned to the browser. If a refresh is revoked or its result is unknown, log in again. **Do not share the same refresh token with Codex CLI or anything else.** An existing account can still be logged in again from its **Login** button. The full contract is in [`src/dots-auth/README.md`](src/dots-auth/README.md).
 
 ### Connect a Muse account
 
-Muse has no official OAuth app, so a Muse account is connected by signing into muse.ai and keeping that session. In the console, add a **Muse** account, then use one of:
+Muse has no official OAuth app, so a Muse account is connected by signing into muse.ai and keeping that session. In the console, choose **Accounts → Add account → Muse** and enter a label; the remote browser below opens on its own. The cookie fields are kept only as an advanced fallback when editing an account.
 
-- **Remote browser (easiest, works on a headless server).** On the account, open **Login → 원격 브라우저 시작**. The server opens a real Chromium on a private virtual display (Xvfb) and streams it into the console, where you sign in with Google directly. Press **로그인 완료 및 연결 확인** when done. The viewer runs on the console's own port, so no extra SSH tunnel is needed.
+- **Remote browser (default, works on a headless server).** Adding a Muse account starts it right away; for an existing account open **Login → 원격 브라우저 시작**. The server opens a real Chromium on a private virtual display (Xvfb) and streams it into the console, where you sign in with Google directly. Use **크게 보기** to fill the window with the remote screen, then press **로그인 완료 및 연결 확인** when done. The viewer runs on the console's own port, so no extra SSH tunnel is needed.
   On a fresh headless server (for example Oracle Cloud) install the two dependencies once, with root:
   ```bash
   sudo apt install -y xvfb        # Debian/Ubuntu; on Oracle Linux use: sudo dnf install -y xorg-x11-server-Xvfb
   bunx playwright install --with-deps chromium
   ```
   `--with-deps` pulls Chromium's shared libraries. If `Xvfb` is not on the service's `PATH`, set it (or install it under `/usr/bin`); the launcher looks it up with `Bun.which("Xvfb")`.
-- **Cookie import.** Sign into muse.ai in your own browser, open DevTools → Network, pick a `muse.ai` request, and paste its `Cookie` request header into the account's **Cookie header** field (or an exported cookie JSON into **Cookies JSON**), then **Save and check**.
+- **Cookie import.** Sign into muse.ai in your own browser, open DevTools → Network, pick a `muse.ai` request, and open the account's **Edit → 고급: 인증값 직접 입력**, paste its `Cookie` request header into **Cookie header** (or an exported cookie JSON into **Cookies JSON**), then **Save and check**.
 
 Either way the renewed session cookies are written back to the account, and the Muse self-heal renews the session and wakes the workspace VM before every job.
 
