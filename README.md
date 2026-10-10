@@ -131,7 +131,7 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 - Request: `prompt` (required), `n` (1–4, default 1), `size` (`auto`, `1024x1024`, `1536x1024`, `1024x1536`), `quality` (`auto`, `low`, `medium`, `high`), `response_format` (`b64_json` default, or `url`). Any other field returns 400.
 - Response: OpenAI-shaped `data[]` (`b64_json` or `url`, plus the `revised_prompt` the Dot actually used), `output_format: "png"` and the real `size`. A `url` points to `GET /api/jobs/:id/images/0` and **needs the API key**.
 - One image takes about a minute, and `n` images are made one after another in the same Dot thread. If the last ones fail, the finished images are returned and the `X-Dots2api-Images-Requested` and `X-Dots2api-Images-Returned` headers say how many.
-- Reference-image edits use `POST /v1/images/edits` with `dots-image` and multipart uploads:
+- Reference-image edits use `POST /v1/images/edits` with `dots-image` or `muse-image` and multipart uploads:
 
 ```bash
 curl -sS http://127.0.0.1:3010/v1/images/edits \
@@ -141,8 +141,8 @@ curl -sS http://127.0.0.1:3010/v1/images/edits \
   -F response_format=b64_json
 ```
 
-- Supply 1–8 PNG/JPEG/WebP files as `image` or `image[]`, with at most 32 MiB of image bytes in total (33 MiB multipart body limit). File signatures determine the type. Other options and the response match generations. Reference bytes are sent as separate app-server image inputs, not prompt text, and are not stored in job history.
-- Masks, variations, JSON image URLs and Muse reference uploads are not supported. `muse-image` edits return 422 before creating a job. Checked once against a real Dot on 2026-10-10: a reference with a red circle and a background-only instruction returned 200 in about 45 s with the circle kept and only the background changed.
+- Supply 1–8 PNG/JPEG/WebP files as `image` or `image[]`, with at most 32 MiB of image bytes in total (33 MiB multipart body limit). File signatures determine the type. Other options and the response match generations. With `dots-image` the reference bytes are sent as separate app-server image inputs, not prompt text; with `muse-image` they are uploaded through the Muse composer and the upload must be accepted before the prompt is sent, so an upload Muse refuses fails the job with `muse_attachment` (502) instead of editing without the reference. Reference bytes are not stored in job history.
+- Masks, variations and JSON image URLs are not supported. Checked once against a real Dot on 2026-10-10: a reference with a red circle and a background-only instruction returned 200 in about 45 s with the circle kept and only the background changed. Checked once against a real Muse on 2026-10-10: a reference holding an off-centre red circle, a blue triangle and a black bar returned 200 in about 55 s with the circle and the bar kept within 3% of their centre and 4% of their size and only the background replaced.
 
 ### Jobs API
 

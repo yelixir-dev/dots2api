@@ -4,8 +4,8 @@ import { chromium } from "playwright";
 import type { BrowserContext, Page } from "playwright";
 import { z } from "zod";
 import { GatewayError } from "../../contracts";
-import type { AdapterContext, Credentials, ProviderAdapter, RunImage, RunResult } from "../../contracts";
-import { MAX_IMAGES } from "../../images";
+import type { AdapterContext, Credentials, ProviderAdapter, ReferenceImage, RunImage, RunResult } from "../../contracts";
+import { IMAGE_EXTENSIONS, MAX_IMAGES } from "../../images";
 
 const configuration = z.object({
   cookieHeader: z.string().trim().optional(),
@@ -18,6 +18,8 @@ const importedCookies = z.union([
 ]);
 const CHAT_TIMEOUT = 300_000;
 const ATTACHMENT_TIMEOUT = 10_000;
+/** References can total 32 MiB, so their upload gets its own, much longer, budget than a thumbnail read. */
+const REFERENCE_UPLOAD_TIMEOUT = 120_000;
 const MEDIA_LOAD_TIMEOUT = 10_000;
 const VM_WAKE_TIMEOUT = 60_000;
 /** Muse's own authentication cookies; only these are persisted back to the account. */
@@ -130,6 +132,33 @@ interface Attachment {
   readonly iSrc: string;
   readonly w: number;
   readonly h: number;
+}
+
+/**
+ * Sends reference images through Muse's own composer. Two signals must both arrive before the prompt is sent: Muse's
+ * upload response, which carries the bytes, and the composer preview that replaces the file with a local thumbnail. A
+ * prompt sent in between is submitted as a text-only edit, so an unconfirmed upload fails the job instead.
+ */
+async function attachReferences(page: Page, references: readonly ReferenceImage[], origin: URL): Promise<void> {
+  const input = page.locator('input[type="file"]').first();
+  await input.waitFor({ state: "attached", timeout: ATTACHMENT_TIMEOUT });
+  const acknowledged = page.waitForResponse(
+    (response) => response.url().startsWith(new URL("/api/falco", origin).href),
+    { timeout: REFERENCE_UPLOAD_TIMEOUT },
+  ).catch(() => null);
+  await input.setInputFiles(references.map((image, index) => ({
+    name: `reference-${index + 1}.${IMAGE_EXTENSIONS[image.mime]}`,
+    mimeType: image.mime,
+    buffer: Buffer.from(image.data),
+  })));
+  const upload = await acknowledged;
+  if (!upload?.ok()) throw new GatewayError("muse_attachment", "Muse did not accept the reference image upload.", 502);
+  await page.waitForFunction((expected: number) => {
+    const composer = document.querySelector('[data-hatch-composer-chrome="true"]');
+    return !!composer && composer.querySelectorAll('img[src^="blob:"]').length >= expected;
+  }, references.length, { timeout: ATTACHMENT_TIMEOUT }).catch(() => {
+    throw new GatewayError("muse_attachment", "Muse did not confirm the reference image attachment.", 502);
+  });
 }
 
 /**
@@ -346,11 +375,10 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
       }
     },
     async run(credentials, prompt, context): Promise<RunResult> {
-      if (context.referenceImages?.length) {
-        throw new GatewayError("unsupported_parameter", "Muse reference-image upload is not verified; use dots-image for image edits.", 422);
-      }
       const config = this.validate(credentials);
       if (!prompt.trim()) throw new GatewayError("muse_prompt", "Prompt must not be empty.");
+      const references = context.referenceImages ?? [];
+      if (references.length > MAX_IMAGES) throw new GatewayError("invalid_image", `Supply at most ${MAX_IMAGES} reference images.`);
       const browser = await openBrowser({ ...config, login: "false" }, context, origin);
       let submitted = false;
       let page: Page | undefined;
@@ -365,6 +393,9 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
         if (await page.locator('div[class*="hatch-chat-groupable-bubble"]').count()) {
           throw new GatewayError("muse_thread", "New Muse thread contains previous messages.", 502);
         }
+        // The upload precedes the baseline on purpose: the reference attached here is an existing attachment by then, so
+        // it can never be mistaken for the result of the edit.
+        if (references.length) await attachReferences(page, references, origin);
         // A generated image must be new, not a history attachment or the user's own upload.
         const baseline = new Set((await page.evaluate(attachmentsInPage)).flatMap((attachment) => [attachment.src, attachment.vSrc, attachment.iSrc]).filter(Boolean));
         const baselineAttachments = await page.locator('[data-testid^="hatch-chat-attachment-presentation-"]').count();

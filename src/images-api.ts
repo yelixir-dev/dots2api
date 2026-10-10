@@ -82,9 +82,6 @@ export function attachImageGeneration(app: Hono, gateway: Gateway): void {
     } else input = await c.req.json();
     const body = request.parse(input);
     const provider = imageProvider(body.model);
-    if (referenceImages && provider === "muse") {
-      throw new GatewayError("unsupported_parameter", "Muse reference-image upload is not verified; use dots-image for image edits.", 422);
-    }
     const origin = new URL(c.req.url).origin;
     const prompt = buildImagePrompt({ prompt: body.prompt, size: body.size, quality: body.quality });
     const data: Array<Record<string, string>> = [];

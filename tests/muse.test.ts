@@ -8,22 +8,33 @@ import { createMuseAdapter } from "../src/providers/muse";
 const accountA = accountIdSchema.parse("11111111-1111-4111-8111-111111111111");
 const accountB = accountIdSchema.parse("22222222-2222-4222-8222-222222222222");
 const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64"));
-it("rejects reference inputs before launching a browser instead of silently dropping them", async () => {
-  const adapter = createMuseAdapter();
-  await expect(adapter.run({}, "edit", {
-    accountId: accountA, dataDir: "/unused", signal: new AbortController().signal,
-    referenceImages: [{ mime: "image/png", data: png }],
-  })).rejects.toMatchObject({ code: "unsupported_parameter", status: 422, uncertain: false });
-});
 const html = `<!doctype html><html><body>
-<div role="button" aria-label="Message Send" style="width:100%">
+<div role="button" aria-label="Message Send" data-hatch-composer-chrome="true" style="width:100%">
+<input type="file" multiple class="sr-only">
 <textarea></textarea><button aria-label="Send" disabled>Send</button></div>
 <main role="log" aria-label="Chat messages"></main>
 <script>
   const input = document.querySelector("textarea");
   const button = document.querySelector("button");
   input.addEventListener("input", () => { button.disabled = !input.value; });
+  document.querySelector('input[type="file"]').addEventListener("change", async (event) => {
+    for (const file of event.target.files) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const response = await fetch("/api/falco", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: file.name, b64: btoa(String.fromCharCode(...bytes)) }),
+      });
+      if (!response.ok) return;
+      const preview = document.createElement("img");
+      preview.src = URL.createObjectURL(file);
+      document.querySelector('[data-hatch-composer-chrome="true"]').appendChild(preview);
+    }
+  });
   button.addEventListener("click", () => {
+    fetch("/api/sent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: input.value, previews: document.querySelectorAll('[data-hatch-composer-chrome="true"] img[src^="blob:"]').length }),
+    });
     document.querySelector("main").innerHTML =
       '<div class="hatch-chat-groupable-bubble chat-user-bubble"></div>' +
       '<button aria-label="Stop">Stop</button>' +
@@ -58,17 +69,30 @@ describe("Muse browser adapter", () => {
   let dataDir: string;
   let server: ReturnType<typeof Bun.serve>;
   let adapter: ReturnType<typeof createMuseAdapter>;
+  /** Records what the synthetic editor page uploaded and submitted, and lets one test refuse the upload. */
+  const uploaded: { readonly name: string; readonly b64: string }[] = [];
+  const sent: { readonly prompt: string; readonly previews: number }[] = [];
+  let falcoStatus = 200;
 
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "dots2api-muse-"));
     server = Bun.serve({
       port: 0,
-      fetch(request) {
+      async fetch(request) {
         const path = new URL(request.url).pathname;
         if (path === "/api/session") {
           return Response.json({ status: request.headers.get("cookie")?.includes("hatch_sess=valid") ? "assigned" : "anonymous" });
         }
         if (path === "/media/result.png") return new Response(png, { headers: { "content-type": "image/png" } });
+        if (path === "/api/falco") {
+          if (falcoStatus !== 200) return new Response("no", { status: falcoStatus });
+          uploaded.push(await request.json());
+          return Response.json({ ok: true });
+        }
+        if (path === "/api/sent") {
+          sent.push(await request.json());
+          return Response.json({ ok: true });
+        }
         if (path === "/thread/new") return new Response(html, { headers: { "content-type": "text/html" } });
         return new Response("gone", { headers: { "content-type": "text/html" } });
       },
@@ -123,6 +147,41 @@ describe("Muse browser adapter", () => {
     expect(result.images?.[0]?.height).toBe(1);
     expect(Buffer.from(result.images?.[0]?.data ?? []).equals(Buffer.from(png))).toBe(true);
   }, 60_000);
+
+  it("uploads reference images through the composer before the prompt is sent", async () => {
+    // Given a signed-in account and two reference images.
+    uploaded.length = 0; sent.length = 0; falcoStatus = 200;
+    const context = { accountId: accountA, dataDir, signal: new AbortController().signal };
+    await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
+    const references = [{ mime: "image/png" as const, data: png }, { mime: "image/png" as const, data: png }];
+    // When an edit runs with them.
+    const result = await adapter.run({}, "make it blue", { ...context, referenceImages: references });
+    // Then Muse received each file's real bytes, and the prompt was sent only after both previews existed.
+    expect(uploaded).toEqual([
+      { name: "reference-1.png", b64: Buffer.from(png).toString("base64") },
+      { name: "reference-2.png", b64: Buffer.from(png).toString("base64") },
+    ]);
+    expect(sent).toEqual([{ prompt: "make it blue", previews: 2 }]);
+    // And the references are not reported back as the job's own result.
+    expect(result.text).toBe("A complete answer");
+    expect(result.images).toBeUndefined();
+  }, 90_000);
+
+  it("fails the job without sending when Muse rejects a reference upload", async () => {
+    // Given a signed-in account whose upload endpoint refuses the bytes.
+    uploaded.length = 0; sent.length = 0; falcoStatus = 500;
+    const context = { accountId: accountA, dataDir, signal: new AbortController().signal };
+    await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
+    const references = [{ mime: "image/png" as const, data: png }, { mime: "image/png" as const, data: png }];
+    // When an edit runs with a reference.
+    const failure = await adapter.run({}, "edit", { ...context, referenceImages: references })
+      .then(() => null, (error: unknown) => error);
+    // Then the job fails with a typed attachment error instead of editing without the reference.
+    expect(failure).toMatchObject({ code: "muse_attachment", status: 502, uncertain: false });
+    expect(uploaded).toEqual([]);
+    expect(sent).toEqual([]);
+    falcoStatus = 200;
+  }, 90_000);
 
   it("marks a lost acknowledgement after submission uncertain", async () => {
     // Given a signed-in account whose page navigates away on send.

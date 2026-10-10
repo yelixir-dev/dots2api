@@ -131,7 +131,7 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 - 请求：`prompt`（必填）、`n`（1–4，默认 1）、`size`（`auto`、`1024x1024`、`1536x1024`、`1024x1536`）、`quality`（`auto`、`low`、`medium`、`high`）、`response_format`（默认 `b64_json`，或 `url`）。其他字段会返回 400。
 - 响应：OpenAI 格式的 `data[]`（`b64_json` 或 `url`，以及 Dot 实际使用的 `revised_prompt`）、`output_format: "png"` 和真实的 `size`。`url` 指向 `GET /api/jobs/:id/images/0`，并且**需要 API 密钥**。
 - 生成一张图大约需要一分钟，`n` 张图在同一个 Dot 线程中依次生成。如果最后几张失败，已完成的图像会照常返回，`X-Dots2api-Images-Requested` 和 `X-Dots2api-Images-Returned` 响应头会说明数量。
-- 参考图像编辑使用 `dots-image`，通过 multipart 上传调用 `POST /v1/images/edits`：
+- 参考图像编辑使用 `dots-image` 或 `muse-image`，通过 multipart 上传调用 `POST /v1/images/edits`：
 
 ```bash
 curl -sS http://127.0.0.1:3010/v1/images/edits \
@@ -141,8 +141,8 @@ curl -sS http://127.0.0.1:3010/v1/images/edits \
   -F response_format=b64_json
 ```
 
-- 通过 `image` 或 `image[]` 提供 1–8 张 PNG/JPEG/WebP，图像总大小不超过 32 MiB（multipart 请求体上限 33 MiB）。格式按文件签名判断。其他选项和响应与生成接口相同。参考图像通过独立的 app-server 图像输入传递，不嵌入提示词，也不保存到任务历史中。
-- 不支持蒙版、变体、JSON 图像 URL 或 Muse 参考图像上传。`muse-image` 编辑在创建任务前返回 422。2026-10-10 已用真实 Dot 验证过一次：对带红色圆形的参考图只要求更换背景，约 45 秒返回 200，圆形保持不变，只有背景被替换。
+- 通过 `image` 或 `image[]` 提供 1–8 张 PNG/JPEG/WebP，图像总大小不超过 32 MiB（multipart 请求体上限 33 MiB）。格式按文件签名判断。其他选项和响应与生成接口相同。`dots-image` 通过独立的 app-server 图像输入传递参考图像，不嵌入提示词；`muse-image` 通过 Muse 输入框上传，且该上传必须在提示词发送前被接受。Muse 拒收上传时任务以 `muse_attachment`（502）失败，而不是在没有参考图的情况下执行编辑。参考图像不会保存到任务历史中。
+- 不支持蒙版、变体或 JSON 图像 URL。2026-10-10 已用真实 Dot 验证过一次：对带红色圆形的参考图只要求更换背景，约 45 秒返回 200，圆形保持不变，只有背景被替换。同一天也用真实 Muse 验证过一次：参考图包含偏心红圆、蓝色三角形和黑色长条，约 55 秒返回 200，圆和长条的中心偏差在 3% 以内、尺寸偏差在 4% 以内，只有背景被替换。
 
 ### 任务 API
 

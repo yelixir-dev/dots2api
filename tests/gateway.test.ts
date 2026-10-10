@@ -631,16 +631,22 @@ describe("account isolation and job state", () => {
       })).status).toBe(400);
     });
 
-    test("rejects Muse edits explicitly without discarding the input or submitting a job", async () => {
-      const { app, store } = fixture();
+    test("a Muse edit carries its reference through instead of rejecting the request", async () => {
+      const received: (readonly ReferenceImage[] | undefined)[] = [];
+      const { app, store, gateway } = fixture(async (_credentials, _prompt, context) => {
+        received.push(context.referenceImages);
+        return { text: "edited", remoteId: "muse-thread", images: [{ mime: "image/png", data: png }] };
+      });
+      await gateway.check(gateway.create("muse", "Muse", {}).id);
       const form = new FormData();
       form.set("prompt", "edit");
       form.set("model", "muse-image");
       form.append("image", new Blob([png]), "reference.png");
       const response = await edit(app, store.apiKey, form);
-      expect(response.status).toBe(422);
-      expect((await response.json()).error.code).toBe("unsupported_parameter");
-      expect(store.jobs()).toHaveLength(0);
+      expect(response.status).toBe(200);
+      expect(store.jobs()).toHaveLength(1);
+      expect(received).toHaveLength(1);
+      expect(received[0]?.[0]?.data).toEqual(png);
     });
 
     test("gateway validates and snapshots reference bytes before asynchronous execution", async () => {

@@ -131,7 +131,7 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 - 요청: `prompt`(필수), `n`(1~4, 기본 1), `size`(`auto`, `1024x1024`, `1536x1024`, `1024x1536`), `quality`(`auto`, `low`, `medium`, `high`), `response_format`(`b64_json` 기본 / `url`). 그 밖의 필드는 400입니다.
 - 응답: OpenAI 형식의 `data[]`(`b64_json` 또는 `url`, Dot이 실제로 쓴 `revised_prompt`), `output_format: "png"`, 실제 `size`. `url`은 `GET /api/jobs/:id/images/0` 주소이며 **API 키가 필요**합니다.
 - 한 장에 약 1분이 걸리고, `n`장은 같은 Dot 스레드에서 한 장씩 차례로 만듭니다. 마지막까지 못 만들면 이미 만든 장은 돌려주고 `X-Dots2api-Images-Requested`와 `X-Dots2api-Images-Returned` 헤더로 알립니다.
-- 참조 이미지 편집은 `dots-image`와 multipart 업로드로 `POST /v1/images/edits`를 호출합니다:
+- 참조 이미지 편집은 `dots-image` 또는 `muse-image`와 multipart 업로드로 `POST /v1/images/edits`를 호출합니다:
 
 ```bash
 curl -sS http://127.0.0.1:3010/v1/images/edits \
@@ -141,8 +141,8 @@ curl -sS http://127.0.0.1:3010/v1/images/edits \
   -F response_format=b64_json
 ```
 
-- `image` 또는 `image[]`로 PNG/JPEG/WebP 1~8장을 전달하며 이미지 전체 합계는 32 MiB 이하입니다(multipart 본문 한도 33 MiB). 파일 시그니처로 형식을 판별합니다. 다른 옵션과 응답은 생성 API와 같습니다. 참조 이미지 바이트는 프롬프트 문자열이 아닌 별도 app-server 이미지 입력으로 전송하며 작업 기록에 저장하지 않습니다.
-- 마스크, 변형, JSON 이미지 URL, Muse 참조 이미지 업로드는 지원하지 않습니다. `muse-image` 편집은 작업 생성 전에 422를 반환합니다. 2026-10-10에 실제 Dot으로 한 번 확인했습니다. 빨간 원이 있는 참조 이미지에 배경만 바꿔 달라고 하자 약 45초 만에 200을 돌려주었고, 원은 그대로 두고 배경만 바꿨습니다.
+- `image` 또는 `image[]`로 PNG/JPEG/WebP 1~8장을 전달하며 이미지 전체 합계는 32 MiB 이하입니다(multipart 본문 한도 33 MiB). 파일 시그니처로 형식을 판별합니다. 다른 옵션과 응답은 생성 API와 같습니다. `dots-image`는 참조 이미지 바이트를 프롬프트 문자열이 아닌 별도 app-server 이미지 입력으로 전송하고, `muse-image`는 Muse 컴포저로 업로드하며 이 업로드가 프롬프트 전송 전에 접수되어야 합니다. Muse가 업로드를 거절하면 참조 없이 편집하지 않고 작업을 `muse_attachment`(502)로 실패시킵니다. 참조 이미지 바이트는 작업 기록에 저장하지 않습니다.
+- 마스크, 변형, JSON 이미지 URL은 지원하지 않습니다. 2026-10-10에 실제 Dot으로 한 번 확인했습니다. 빨간 원이 있는 참조 이미지에 배경만 바꿔 달라고 하자 약 45초 만에 200을 돌려주었고, 원은 그대로 두고 배경만 바꿨습니다. 같은 날 실제 Muse로도 한 번 확인했습니다. 중심에서 벗어난 빨간 원, 파란 삼각형, 검은 막대가 든 참조 이미지로 요청하자 약 55초 만에 200을 돌려주었고, 원과 막대는 중심 3%·크기 4% 이내로 유지된 채 배경만 바뀌었습니다.
 
 ### 작업 API
 

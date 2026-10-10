@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { accountIdSchema, GatewayError } from "../../contracts";
+import { MAX_IMAGES } from "../../images";
 import { createMuseAdapter } from "./engine";
 
 const requestSchema = z.object({
@@ -11,6 +12,10 @@ const requestSchema = z.object({
   dataDir: z.string(),
   prompt: z.string(),
   pruneThreads: z.boolean().default(false),
+  referenceImages: z.array(z.object({
+    mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
+    dataB64: z.string().min(1),
+  })).max(MAX_IMAGES).default([]),
 });
 const buffers: Buffer[] = [];
 for await (const chunk of process.stdin) buffers.push(Buffer.from(chunk));
@@ -23,6 +28,7 @@ try {
   const adapter = createMuseAdapter(input.site, input.chatTimeout, input.pruneThreads);
   const context = {
     accountId: input.accountId, dataDir: input.dataDir, signal: controller.signal,
+    referenceImages: input.referenceImages.map((image) => ({ mime: image.mime, data: new Uint8Array(Buffer.from(image.dataB64, "base64")) })),
     onAccepted: (remoteId: string | null) => emit({ type: "accepted", remoteId }),
     saveCredentials: (credentials: Record<string, string>) => emit({ type: "credentials", credentials }),
   };

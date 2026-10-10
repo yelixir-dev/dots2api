@@ -9,8 +9,8 @@ import { createMuseAdapter as createBrowserAdapter, pruneThreadsFromEnvironment,
 const MAX_ATTEMPTS = 2;
 const WORKER_LOG_LIMIT = 256 * 1024;
 const WORKER_LOG_TAIL = 2_000;
-/** Failures a second attempt cannot fix: the request or the account configuration is wrong, not the session. */
-const FATAL_CODES = new Set(["muse_cancelled", "muse_credentials", "muse_prompt"]);
+/** Failures a second attempt cannot fix: the request, the reference upload or the account configuration is wrong, not the session. */
+const FATAL_CODES = new Set(["muse_cancelled", "muse_credentials", "muse_prompt", "muse_attachment"]);
 const RETRY_NOTE = "The first Muse attempt did not confirm completion; the account session was re-verified and the run was retried once.";
 
 /**
@@ -98,6 +98,7 @@ async function callWorker(
     cwd: fileURLToPath(new URL("../../", import.meta.url)),
     stdin: new Blob([JSON.stringify({
       operation, ...settings, credentials, prompt, accountId: context.accountId, dataDir: context.dataDir,
+      referenceImages: (context.referenceImages ?? []).map((image) => ({ mime: image.mime, dataB64: Buffer.from(image.data).toString("base64") })),
     })]),
     stdout: "pipe", stderr: "pipe",
   });
@@ -195,9 +196,6 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = 300_00
      * finish on Muse; the job keeps only the delivered result and says that a retry happened.
      */
     async run(credentials, prompt, context) {
-      if (context.referenceImages?.length) {
-        throw new GatewayError("unsupported_parameter", "Muse reference-image upload is not verified; use dots-image for image edits.", 422);
-      }
       definition.validate(credentials);
       let lastError: unknown;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
