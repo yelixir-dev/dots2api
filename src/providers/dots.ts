@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { type AdapterContext, type CheckResult, type Credentials, GatewayError, type ProviderAdapter, type RunImage } from "../contracts";
-import { decodeImage, MAX_IMAGES } from "../images";
+import { type AdapterContext, type CheckResult, type Credentials, GatewayError, type ProviderAdapter, type ReferenceImage, type RunImage } from "../contracts";
+import { decodeImage, MAX_IMAGES, validateReferenceImages } from "../images";
 import { DotConnection } from "./dots/connection";
 
 const DEFAULT_ENDPOINT = "wss://codex-cloud-backend.chatgpt.com";
@@ -160,10 +160,17 @@ async function startTurn(
   connection: DotConnection,
   threadId: string,
   prompt: string,
+  referenceImages?: readonly ReferenceImage[],
 ): Promise<z.infer<typeof turnSchema>> {
   const started = turnSchema.safeParse(await connection.request("turn/start", {
     threadId,
-    input: [{ type: "text", text: prompt }],
+    // App-server UserInput::Image flattens ImageReference::Inline { url }; this is not a Responses input_image.
+    input: [
+      { type: "text", text: prompt },
+      ...(referenceImages ?? []).map((image) => ({
+        type: "image", url: `data:${image.mime};base64,${Buffer.from(image.data).toString("base64")}`,
+      })),
+    ],
   }));
   if (!started.success) throw new GatewayError("dots_protocol", "Dot did not return a turn ID.", 502, true);
   return started.data;
@@ -221,6 +228,7 @@ export const dotsAdapter: ProviderAdapter = {
   check: sessionCheck,
   reconnect: sessionCheck,
   async run(credentials, prompt, context) {
+    if (context.referenceImages) validateReferenceImages(context.referenceImages);
     const settings = config(credentials);
     if (!prompt.trim()) throw new GatewayError("dots_prompt", "Prompt must not be empty.");
     return withConnection(settings, context, async (connection, submission) => {
@@ -235,7 +243,7 @@ export const dotsAdapter: ProviderAdapter = {
         }
         // The socket buffers notifications before submission; completion may beat the RPC reply.
         submission.mark();
-        started = await startTurn(connection, threadId, prompt);
+        started = await startTurn(connection, threadId, prompt, context.referenceImages);
       } catch (error) {
         // A live thread without an Aeon source is one this gateway created; a rejected or agentless submission is
         // never accepted by the agent, so rebinding and retrying once cannot duplicate remote work.
@@ -243,7 +251,7 @@ export const dotsAdapter: ProviderAdapter = {
         submission.clear();
         threadId = await provisionThread(connection, context.saveCredentials, credentials);
         submission.mark();
-        started = await startTurn(connection, threadId, prompt);
+        started = await startTurn(connection, threadId, prompt, context.referenceImages);
       }
       const turnId = started.turn.id;
       context.onAccepted?.(turnId);

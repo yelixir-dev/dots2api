@@ -142,6 +142,31 @@ test("run prefers accepted same-turn ChatGPT delivery over internal completion",
 });
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+test("run sends reference images as app-server image inputs, separately from text", async () => {
+  const references = [
+    { mime: "image/png" as const, data: new Uint8Array(Buffer.from(PNG_BASE64, "base64")) },
+    { mime: "image/jpeg" as const, data: new Uint8Array([0xff, 0xd8, 0xff, 0xe0]) },
+    { mime: "image/webp" as const, data: new Uint8Array(Buffer.from("RIFF0000WEBPVP8 ")) },
+  ];
+  await withServer((peer, request) => {
+    if (handshake(peer, request) || request.method !== "turn/start") return;
+    expect(request.params.input).toEqual([
+      { type: "text", text: "edit the reference" },
+      ...references.map((image) => ({ type: "image", url: `data:${image.mime};base64,${Buffer.from(image.data).toString("base64")}` })),
+    ]);
+    peer.send(JSON.stringify({ method: "turn/completed", params: {
+      threadId: "dot-thread", turn: { id: "turn-1", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "done" }] },
+    } }));
+    reply(peer, request, { turn: { id: "turn-1" } });
+  }, async (credentials) => {
+    expect(await dotsAdapter.run(credentials, "edit the reference", { ...context, referenceImages: references })).toEqual({ text: "done", remoteId: "turn-1" });
+  });
+});
+
+test("run rejects invalid reference images before connecting", async () => {
+  await expect(dotsAdapter.run({}, "edit", { ...context, referenceImages: [{ mime: "image/png", data: new Uint8Array([1, 2, 3]) }] }))
+    .rejects.toMatchObject({ code: "invalid_image", uncertain: false });
+});
 const generated = (extra: object = {}) => ({ id: "img-1", type: "imageGeneration", status: "completed", failure: null, ...extra });
 const delivered = {
   id: "delivery", type: "mcpToolCall", tool: "user_message.send_message", status: "completed",

@@ -10,6 +10,7 @@ import { DotsAuth } from "./dots-auth";
 import { createMuseLoginService } from "./muse-login";
 import { MuseLoginRoutes } from "./muse-login-routes";
 import { accountIdSchema } from "./contracts";
+import { MAX_IMAGE_BYTES } from "./images";
 
 const store = new Store(resolve(process.env["DOTS2API_DATA_DIR"] ?? "data"));
 store.recoverInterruptedJobs();
@@ -41,7 +42,9 @@ const server = Bun.serve<ViewerData>({
   port: Number(process.env["PORT"] ?? 3010),
   idleTimeout: 255,
   // Context budgets include multilingual text and tool schemas; bytes are not tokens.
-  maxRequestBodySize: 16 * 1024 * 1024,
+  // Reference images are bytes rather than tokens, so this bound has to clear the multipart route's own limit;
+  // otherwise Bun answers 413 with an empty body before the route can explain what the limit is.
+  maxRequestBodySize: MAX_IMAGE_BYTES + 4 * 1024 * 1024,
   development: process.env["NODE_ENV"] !== "production",
   routes: { "/": index },
   websocket: {

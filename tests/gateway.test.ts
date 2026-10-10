@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApi } from "../src/api";
 import { GatewayError, jobIdSchema } from "../src/contracts";
-import type { ProviderAdapter, ProviderId, RunResult } from "../src/contracts";
+import type { ProviderAdapter, ProviderId, ReferenceImage, RunResult } from "../src/contracts";
+import { MAX_IMAGE_BYTES, MAX_IMAGES } from "../src/images";
 import { Gateway } from "../src/gateway";
 import { Store } from "../src/store";
 
@@ -570,6 +571,121 @@ describe("account isolation and job state", () => {
         method: "POST", headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
       });
 
+    const edit = (app: ReturnType<typeof fixture>["app"], key: string | null, form: FormData) =>
+      app.request("http://localhost/v1/images/edits", {
+        method: "POST", headers: key ? { authorization: `Bearer ${key}` } : {}, body: form,
+      });
+
+    test("edits carry ordered signature-validated files through the gateway for every requested image", async () => {
+      const received: (readonly ReferenceImage[])[] = [];
+      const { app, store, gateway } = fixture(async (_credentials, prompt, context) => {
+        expect(prompt).not.toContain(Buffer.from(png).toString("base64"));
+        received.push(context.referenceImages ?? []);
+        return { text: "done", remoteId: "r", images: [{ mime: "image/png", data: png }] };
+      });
+      await gateway.check(gateway.create("dots", "Edits", {}).id);
+      const form = new FormData();
+      form.set("prompt", "make the dot blue");
+      form.set("n", "2");
+      form.set("response_format", "url");
+      form.append("image", new Blob([png], { type: "text/plain" }), "first.txt");
+      form.append("image[]", new Blob([webp]), "second.webp");
+      const response = await edit(app, store.apiKey, form);
+      expect(response.status).toBe(200);
+      expect((await response.json()).data).toHaveLength(2);
+      expect(received).toHaveLength(2);
+      for (const images of received) {
+        expect(images.map((image) => image.mime)).toEqual(["image/png", "image/webp"]);
+        expect(images[0]?.data).toEqual(png);
+        expect(images[1]?.data).toEqual(webp);
+      }
+      expect(JSON.stringify(store.jobs())).not.toContain(Buffer.from(png).toString("base64"));
+    });
+
+    test.each(["missing", "url", "signature", "count", "mask", "duplicate", "empty"])("rejects %s edit input before submission", async (kind) => {
+      let runs = 0;
+      const { app, store, gateway } = fixture(async () => { runs++; return { text: "unexpected", remoteId: null }; });
+      const form = new FormData();
+      form.set("prompt", "edit");
+      if (kind !== "missing") form.append("image", new Blob([kind === "signature" ? "not an image" : kind === "empty" ? "" : png]), "reference.png");
+      if (kind === "url") form.set("image", "http://127.0.0.1/private");
+      if (kind === "count") for (let i = 0; i < MAX_IMAGES; i++) form.append("image[]", new Blob([png]), `${i}.png`);
+      if (kind === "mask") form.set("mask", new Blob([png]), "mask.png");
+      if (kind === "duplicate") form.append("prompt", "other");
+      const response = await edit(app, store.apiKey, form);
+      expect(response.status).toBe(kind === "empty" ? 413 : 400);
+      expect(runs).toBe(0);
+      expect(gateway.store.jobs()).toHaveLength(0);
+    });
+
+    test("rejects over-limit reference bytes and requires multipart and authorization", async () => {
+      const { app, store } = fixture();
+      const form = new FormData();
+      form.set("prompt", "edit");
+      form.append("image", new Blob([new Uint8Array(MAX_IMAGE_BYTES + 1)]), "huge.png");
+      expect((await edit(app, store.apiKey, form)).status).toBe(413);
+      expect((await edit(app, null, new FormData())).status).toBe(401);
+      expect((await app.request("http://localhost/v1/images/edits", {
+        method: "POST", headers: { authorization: `Bearer ${store.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "edit", image: "https://example.org/image.png" }),
+      })).status).toBe(400);
+    });
+
+    test("rejects Muse edits explicitly without discarding the input or submitting a job", async () => {
+      const { app, store } = fixture();
+      const form = new FormData();
+      form.set("prompt", "edit");
+      form.set("model", "muse-image");
+      form.append("image", new Blob([png]), "reference.png");
+      const response = await edit(app, store.apiKey, form);
+      expect(response.status).toBe(422);
+      expect((await response.json()).error.code).toBe("unsupported_parameter");
+      expect(store.jobs()).toHaveLength(0);
+    });
+
+    test("gateway validates and snapshots reference bytes before asynchronous execution", async () => {
+      let received: readonly ReferenceImage[] | undefined;
+      const { gateway } = fixture(async (_credentials, _prompt, context) => {
+        received = context.referenceImages;
+        return { text: "done", remoteId: "r" };
+      });
+      await gateway.check(gateway.create("dots", "References", {}).id);
+      expect(() => gateway.submit({ provider: "dots", prompt: "edit", referenceImages: [] })).toThrow(GatewayError);
+      expect(() => gateway.submit({ provider: "dots", prompt: "edit", referenceImages: [{ mime: "image/jpeg", data: png }] })).toThrow(GatewayError);
+      const data = new Uint8Array(png);
+      const job = gateway.submit({ provider: "dots", prompt: "edit", referenceImages: [{ mime: "image/png", data }] });
+      data.fill(0);
+      expect((await gateway.wait(job.id)).status).toBe("completed");
+      expect(received?.[0]?.data).toEqual(png);
+    });
+
+    test("a queued job still delivers its own reference images when its turn comes", async () => {
+      // Given one account whose first job is held open, and a second job with references submitted behind it.
+      const started = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const received = new Map<string, readonly ReferenceImage[] | undefined>();
+      const { gateway } = fixture(async (_credentials, prompt, context) => {
+        received.set(prompt, context.referenceImages);
+        if (prompt === "first") { started.resolve(); await gate.promise; }
+        return { text: prompt, remoteId: prompt };
+      });
+      const account = gateway.create("dots", "Queue", {});
+      await gateway.check(account.id);
+      const first = gateway.submit({ accountId: account.id, prompt: "first" });
+      await started.promise;
+      const data = new Uint8Array(png);
+      const queued = gateway.submit({ accountId: account.id, prompt: "edit", referenceImages: [{ mime: "image/png", data }] });
+      // When the caller reuses its buffer while the job waits, and the first job then finishes.
+      data.fill(0);
+      expect(queued.status).toBe("queued");
+      gate.resolve();
+      await gateway.wait(first.id);
+      // Then the queued job ran with the bytes that were submitted, and the first job had none.
+      expect((await gateway.wait(queued.id)).status).toBe("completed");
+      expect(received.get("first")).toBeUndefined();
+      expect(received.get("edit")?.[0]?.data).toEqual(png);
+    });
+
     test("returns base64 images, passes size and quality as plain words, and reports revised prompts", async () => {
       // Given a Dot that returns one PNG with a revised prompt.
       const prompts: string[] = [];
@@ -599,7 +715,7 @@ describe("account isolation and job state", () => {
       let active = 0; let maxActive = 0;
       const { app, store, gateway } = fixture(async () => {
         active++; maxActive = Math.max(maxActive, active);
-        await Bun.sleep(5); active--;
+        await Promise.resolve(); active--;
         return { text: "done", remoteId: "r", images: [{ mime: "image/png", data: png }] };
       });
       await gateway.check(gateway.create("dots", "Images", {}).id);

@@ -1,5 +1,6 @@
 import { GatewayError, jobIdSchema } from "./contracts";
-import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId, ProviderStatus } from "./contracts";
+import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId, ProviderStatus, ReferenceImage } from "./contracts";
+import { validateReferenceImages } from "./images";
 import { Store } from "./store";
 import type { DotsAuth } from "./dots-auth";
 
@@ -176,7 +177,10 @@ export class Gateway {
       return null;
     }
   }
-  submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly prompt: string }): Job {
+  submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly prompt: string; readonly referenceImages?: readonly ReferenceImage[] }): Job {
+    if (input.referenceImages) validateReferenceImages(input.referenceImages);
+    // A snapshot, so a queued job still sends the bytes the caller submitted even if the caller's buffer is reused.
+    const referenceImages = input.referenceImages?.map((image) => ({ mime: image.mime, data: new Uint8Array(image.data) }));
     const candidates = this.accounts()
       .filter((a) => a.provider === input.provider && a.enabled && a.status === "ready" && !this.leasesHeld.has(a.id));
     const account = input.accountId
@@ -202,7 +206,7 @@ export class Gateway {
     this.store.saveJob(job);
     this.depths.set(account.id, this.depth(account.id) + 1);
     const previous = this.chains.get(account.id) ?? Promise.resolve();
-    const task = previous.then(() => this.startJob(job));
+    const task = previous.then(() => this.startJob(job, referenceImages));
     const chained = task.then(() => undefined, () => undefined);
     this.chains.set(account.id, chained);
     // The promise a caller waits on covers the queued time as well as the run.
@@ -219,7 +223,7 @@ export class Gateway {
    * console keeps offering Check between queued jobs, and a job whose turn arrives after a restart or a quarantine is
    * failed honestly instead of being sent to a session that is no longer trusted.
    */
-  private async startJob(job: Job): Promise<Job> {
+  private async startJob(job: Job, referenceImages?: readonly ReferenceImage[]): Promise<Job> {
     await this.waitForLease(job.accountId);
     try {
       const current = this.store.job(job.id) ?? job;
@@ -236,7 +240,7 @@ export class Gateway {
         // execute() re-saves this object when the provider accepts the work, so it must already read as running.
         const started = this.store.saveJob({ ...current, status: "running" });
         this.changed();
-        return await this.execute(started);
+        return await this.execute(started, referenceImages);
       } finally {
         this.busy.delete(job.accountId);
         this.leases.delete(done.promise);
@@ -258,13 +262,14 @@ export class Gateway {
     if (!job) throw new GatewayError("job_not_found", "Job not found.", 404);
     return job;
   }
-  private async execute(job: Job): Promise<Job> {
+  private async execute(job: Job, referenceImages?: readonly ReferenceImage[]): Promise<Job> {
     let remoteId: string | null = null;
     try {
       const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(300_000)]);
       const credentials = this.adapters[job.provider].validate(await this.credentials(job.accountId, signal));
       const result = await this.adapters[job.provider].run(credentials, job.prompt, {
         accountId: job.accountId, dataDir: this.store.dataDir, signal,
+        ...(referenceImages ? { referenceImages } : {}),
         saveCredentials: (repaired) => { this.store.saveAccount(this.account(job.accountId), repaired); },
         onAccepted: (id) => {
           remoteId = id;

@@ -195,6 +195,9 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = 300_00
      * finish on Muse; the job keeps only the delivered result and says that a retry happened.
      */
     async run(credentials, prompt, context) {
+      if (context.referenceImages?.length) {
+        throw new GatewayError("unsupported_parameter", "Muse reference-image upload is not verified; use dots-image for image edits.", 422);
+      }
       definition.validate(credentials);
       let lastError: unknown;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {

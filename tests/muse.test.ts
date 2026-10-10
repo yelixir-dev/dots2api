@@ -8,6 +8,13 @@ import { createMuseAdapter } from "../src/providers/muse";
 const accountA = accountIdSchema.parse("11111111-1111-4111-8111-111111111111");
 const accountB = accountIdSchema.parse("22222222-2222-4222-8222-222222222222");
 const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64"));
+it("rejects reference inputs before launching a browser instead of silently dropping them", async () => {
+  const adapter = createMuseAdapter();
+  await expect(adapter.run({}, "edit", {
+    accountId: accountA, dataDir: "/unused", signal: new AbortController().signal,
+    referenceImages: [{ mime: "image/png", data: png }],
+  })).rejects.toMatchObject({ code: "unsupported_parameter", status: 422, uncertain: false });
+});
 const html = `<!doctype html><html><body>
 <div role="button" aria-label="Message Send" style="width:100%">
 <textarea></textarea><button aria-label="Send" disabled>Send</button></div>

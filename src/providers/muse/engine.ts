@@ -346,6 +346,9 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
       }
     },
     async run(credentials, prompt, context): Promise<RunResult> {
+      if (context.referenceImages?.length) {
+        throw new GatewayError("unsupported_parameter", "Muse reference-image upload is not verified; use dots-image for image edits.", 422);
+      }
       const config = this.validate(credentials);
       if (!prompt.trim()) throw new GatewayError("muse_prompt", "Prompt must not be empty.");
       const browser = await openBrowser({ ...config, login: "false" }, context, origin);

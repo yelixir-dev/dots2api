@@ -1,9 +1,11 @@
 import type { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { GatewayError } from "./contracts";
-import type { Job, ProviderId } from "./contracts";
+import type { Job, ProviderId, ReferenceImage } from "./contracts";
 import type { Gateway } from "./gateway";
 import { buildImagePrompt } from "./image-prompt";
+import { MAX_IMAGE_BYTES, MAX_IMAGES, sniffImage, validateReferenceImages } from "./images";
 
 const MAX_N = 4;
 /** Image models this gateway serves and the provider account each one runs on. */
@@ -33,9 +35,56 @@ function imageProvider(model: string | undefined): ProviderId {
 
 /** One generated image per job: each is a separate provider turn, run one after another on that account's single thread. */
 export function attachImageGeneration(app: Hono, gateway: Gateway): void {
-  app.post("/v1/images/generations", async (c) => {
-    const body = request.parse(await c.req.json());
+  app.use("/v1/images/edits", bodyLimit({
+    maxSize: MAX_IMAGE_BYTES + 1024 * 1024,
+    onError: () => { throw new GatewayError("image_too_large", "Multipart image request exceeds the 33 MiB body limit.", 413); },
+  }));
+  app.post("/v1/images/:operation", async (c) => {
+    const operation = c.req.param("operation");
+    if (operation !== "generations" && operation !== "edits") return c.notFound();
+    let referenceImages: ReferenceImage[] | undefined;
+    let input: unknown;
+    if (operation === "edits") {
+      if (!c.req.header("content-type")?.toLowerCase().startsWith("multipart/form-data;")) {
+        throw new GatewayError("invalid_request", "Image edits require multipart/form-data.");
+      }
+      let form: FormData;
+      try { form = await c.req.raw.formData(); }
+      catch { throw new GatewayError("invalid_request", "Invalid multipart image request."); }
+      const fields: Record<string, unknown> = {};
+      const files: File[] = [];
+      for (const [name, value] of form) {
+        if (name === "image" || name === "image[]") {
+          if (typeof value === "string") throw new GatewayError("invalid_image", "Images must be uploaded binary files, not URLs or strings.");
+          files.push(value);
+        } else {
+          if (typeof value !== "string" || Object.hasOwn(fields, name)) {
+            throw new GatewayError("invalid_request", "Options must be single text fields.");
+          }
+          fields[name] = name === "n" ? Number(value) : value;
+        }
+      }
+      if (files.length === 0 || files.length > MAX_IMAGES) {
+        throw new GatewayError("invalid_image", `Supply between 1 and ${MAX_IMAGES} reference images.`);
+      }
+      if (files.some((file) => file.size === 0) || files.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGE_BYTES) {
+        throw new GatewayError("image_too_large", "Reference images must be nonempty and total at most 32 MiB.", 413);
+      }
+      referenceImages = [];
+      for (const file of files) {
+        const data = new Uint8Array(await file.arrayBuffer());
+        const mime = sniffImage(data);
+        if (!mime) throw new GatewayError("invalid_image", "Reference images must contain PNG, JPEG or WebP bytes.");
+        referenceImages.push({ mime, data });
+      }
+      validateReferenceImages(referenceImages);
+      input = fields;
+    } else input = await c.req.json();
+    const body = request.parse(input);
     const provider = imageProvider(body.model);
+    if (referenceImages && provider === "muse") {
+      throw new GatewayError("unsupported_parameter", "Muse reference-image upload is not verified; use dots-image for image edits.", 422);
+    }
     const origin = new URL(c.req.url).origin;
     const prompt = buildImagePrompt({ prompt: body.prompt, size: body.size, quality: body.quality });
     const data: Array<Record<string, string>> = [];
@@ -43,7 +92,7 @@ export function attachImageGeneration(app: Hono, gateway: Gateway): void {
     let first: { width?: number | undefined; height?: number | undefined; format?: "png" | "jpeg" | "webp" } = {};
     let failure: GatewayError | undefined;
     for (let index = 0; index < body.n; index++) {
-      const job: Job = gateway.submit({ provider, prompt });
+      const job: Job = gateway.submit({ provider, prompt, ...(referenceImages ? { referenceImages } : {}) });
       jobIds.push(job.id);
       const result = await gateway.wait(job.id);
       if (result.status !== "completed") {
