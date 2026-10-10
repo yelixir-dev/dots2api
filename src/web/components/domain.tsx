@@ -8,7 +8,7 @@ import { Button, Elapsed, Notice, StatusBadge, TimeText } from "./ui";
 import type { Tone } from "./ui";
 
 const accountTone = { unconnected: "neutral", ready: "ok", error: "danger" } as const satisfies Record<AccountStatus, Tone>;
-const jobTone = { running: "accent", completed: "ok", failed: "danger", unknown: "warn" } as const satisfies Record<JobStatus, Tone>;
+const jobTone = { queued: "neutral", running: "accent", completed: "ok", failed: "danger", unknown: "warn" } as const satisfies Record<JobStatus, Tone>;
 
 export function DotAddressHint() {
   return (

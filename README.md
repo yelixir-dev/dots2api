@@ -30,7 +30,7 @@
 - **Self-healing.** A Dots account whose thread lost its agent rebinds to a fresh thread on its own; a Muse account whose session expired or whose cloud workspace VM slept renews the session and wakes the VM before running, so it recovers after a remote reset or a server reboot. When a job ends unconfirmed, the gateway re-checks that account's session before taking it out of rotation and keeps it usable if the check passes; a Muse job is retried once only after such a re-check, and the job text says so (the first attempt may still finish on Muse).
 - **Web console.** A React console on loopback with accounts, jobs, a job drawer with image preview, and an API guide that shows your local API key and an OmO `models.json` example.
 - **Device-code login.** You approve at `auth.openai.com/codex/device`, possibly from another computer; tokens stay on the server, encrypted with AES-256-GCM, and are refreshed 60 seconds before expiry.
-- **One job per account.** A busy account answers `409 account_busy` and no usable account answers `503`, so concurrent requests never share a Dot thread.
+- **One job per account, in order.** A second job for the same account is accepted as `queued` and starts when the current one finishes, so concurrent requests never share a Dot thread; an account held by an interactive login or check answers `409 account_busy`, a full queue answers `429 queue_full`, and a provider with no usable account answers `503`.
 - **Loopback only.** The server binds `127.0.0.1` and the `/v1` endpoints require a Bearer API key.
 
 ## Install
@@ -135,12 +135,12 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 
 ### Jobs API
 
-Send long work asynchronously with `POST /api/jobs {"provider":"dots","prompt":"..."}` and poll `GET /api/jobs/:id`. `GET /api/events` streams a `change` event over SSE when connection state changes.
+Send long work asynchronously with `POST /api/jobs {"provider":"dots","prompt":"..."}` and poll `GET /api/jobs/:id`. A job that arrives while its account is busy reports `status: "queued"` until its turn comes. `GET /api/events` streams a `change` event over SSE when connection state changes.
 
 ## How it works
 
 1. A client calls `/v1/...` with the Bearer key, or the console calls `/api/...` from the same origin.
-2. The gateway picks an enabled Dot account that is not already running a job.
+2. The gateway picks an enabled account that is not already running a job, and queues work for a busy account behind the job in flight.
 3. The Dots provider opens `wss://codex-cloud-backend.chatgpt.com` and speaks the app-server JSON-RPC that the Codex client uses, on your existing Aeon thread.
 4. The job and its state are persisted in SQLite.
 5. Chat output is returned as OpenAI JSON or SSE; images are checked by file signature and saved under `images/<job id>/`.

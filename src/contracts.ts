@@ -8,7 +8,7 @@ export const jobIdSchema = z.string().uuid().brand<"JobId">();
 export type JobId = z.infer<typeof jobIdSchema>;
 export type Credentials = Readonly<Record<string, string>>;
 export type AccountStatus = "unconnected" | "ready" | "error";
-export type JobStatus = "running" | "completed" | "failed" | "unknown";
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "unknown";
 
 export interface Account {
   readonly id: AccountId;

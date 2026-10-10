@@ -28,7 +28,7 @@ const jobSchema = z.object({
   accountId: accountIdSchema,
   provider: providerIdSchema,
   prompt: z.string(),
-  status: z.enum(["running", "completed", "failed", "unknown"]),
+  status: z.enum(["queued", "running", "completed", "failed", "unknown"]),
   output: z.string(),
   error: z.string().nullable(),
   remoteId: z.string().nullable(),
@@ -109,9 +109,19 @@ export class Store {
 
   /** Called by the serving process at startup, never by read-only diagnostics. */
   recoverInterruptedJobs(): void {
-    const interrupted = this.db.query<Row, []>("SELECT body FROM jobs WHERE json_extract(body, '$.status') = 'running'")
+    const unfinished = this.db.query<Row, []>("SELECT body FROM jobs WHERE json_extract(body, '$.status') IN ('queued', 'running')")
       .all().map((row) => jobSchema.parse(JSON.parse(row.body)));
-    for (const job of interrupted) {
+    for (const job of unfinished) {
+      if (job.status === "queued") {
+        // Still waiting for its turn when the gateway stopped, so no remote work exists and the account stays usable.
+        this.saveJob({
+          ...job,
+          status: "failed",
+          error: "The gateway restarted before this job started; submit it again.",
+          finishedAt: new Date().toISOString(),
+        });
+        continue;
+      }
       if (job.status === "running") {
         this.saveJob({
           ...job,

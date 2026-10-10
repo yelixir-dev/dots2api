@@ -30,7 +30,7 @@
 - **自愈。** 丢失代理的 Dot 线程账号会自动重新绑定到新线程；muse.ai 会话过期或云端工作 VM 休眠的账号会在运行前续签会话并唤醒 VM，因此能在远端重置或服务器重启后自行恢复正常。任务以未确认状态结束时，网关会先重新检查该账号的会话再决定是否把它移出轮换，检查通过就继续可用；Muse 任务只在这样重新检查后重试一次，并在任务文本中注明（第一次尝试仍可能在 Muse 上完成）。
 - **Web 控制台。** 运行在回环地址上的 React 控制台，包含账号、任务、带图像预览的任务详情，以及显示本地 API 密钥和 OmO `models.json` 示例的 API 指南。
 - **设备码登录。** 在 `auth.openai.com/codex/device` 批准，可以在另一台电脑上完成；令牌只保存在服务器上，使用 AES-256-GCM 加密，并在到期前 60 秒刷新。
-- **每个账号同时只有一个任务。** 账号忙碌时返回 `409 account_busy`，没有可用账号时返回 `503`，因此并发请求不会共用同一个 Dot 线程。
+- **每个账号同时只执行一个任务，且按顺序执行。** 忙碌账号收到的新任务会以 `queued` 接受，并在当前任务结束后开始，因此并发请求不会共用同一个 Dot 线程；登录或检查占用账号时返回 `409 account_busy`，队列已满返回 `429 queue_full`，没有可用账号返回 `503`。
 - **仅限回环地址。** 服务器只绑定 `127.0.0.1`，`/v1` 端点需要 Bearer API 密钥。
 
 ## 安装
@@ -135,12 +135,12 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 
 ### 任务 API
 
-用 `POST /api/jobs {"provider":"dots","prompt":"..."}` 异步提交长任务，再用 `GET /api/jobs/:id` 轮询。连接状态变化时，`GET /api/events` 会通过 SSE 推送 `change` 事件。
+用 `POST /api/jobs {"provider":"dots","prompt":"..."}` 异步提交长任务，再用 `GET /api/jobs/:id` 轮询。账号忙碌时提交的任务在轮到自己之前报告 `status: "queued"`。连接状态变化时，`GET /api/events` 会通过 SSE 推送 `change` 事件。
 
 ## 工作原理
 
 1. 客户端带着 Bearer 密钥调用 `/v1/...`，或者控制台从同一来源调用 `/api/...`。
-2. 网关选择一个已启用且当前没有任务在运行的 Dot 账号。
+2. 网关选择一个已启用且当前没有任务在运行的账号；若账号忙碌，则把新任务排队，等当前任务结束后执行。
 3. Dots provider 连接 `wss://codex-cloud-backend.chatgpt.com`，在你现有的 Aeon 线程上使用 Codex 客户端所用的 app-server JSON-RPC。
 4. 任务及其状态保存在 SQLite 中。
 5. 聊天输出以 OpenAI JSON 或 SSE 返回；图像会按文件签名检查，并保存到 `images/<job id>/`。

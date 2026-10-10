@@ -11,6 +11,7 @@ export const accountStatusLabel: Readonly<Record<AccountStatus, string>> = {
 };
 
 export const jobStatusLabel: Readonly<Record<JobStatus, string>> = {
+  queued: "대기 중",
   running: "실행 중",
   completed: "완료",
   failed: "실패",

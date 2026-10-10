@@ -70,6 +70,27 @@ describe("account storage", () => {
       expect(reopened.job(job.id)?.status).toBe("unknown");
     } finally { reopened.close(); }
   });
+  test("fails queued work at restart without quarantining the account it waited on", async () => {
+    // Given a ready account whose next job never got its turn.
+    const { store, gateway, dir } = fixture();
+    const account = gateway.create("dots", "Waiting", { token: "private" });
+    await gateway.check(account.id);
+    const queued = store.saveJob({
+      id: jobIdSchema.parse(crypto.randomUUID()), accountId: account.id, provider: "dots",
+      prompt: "queued", status: "queued", output: "", error: null, remoteId: null, images: [],
+      createdAt: new Date().toISOString(), finishedAt: null,
+    });
+    // When a second store opens the persisted data as a restart would.
+    const reopened = new Store(dir);
+    reopened.recoverInterruptedJobs();
+    try {
+      // Then a job that never reached the provider is failed honestly instead of being left queued forever.
+      expect(reopened.job(queued.id)?.status).toBe("failed");
+      expect(reopened.job(queued.id)?.error).toContain("submit it again");
+      // And the account it was waiting on stays usable.
+      expect(reopened.account(account.id)?.status).toBe("ready");
+    } finally { reopened.close(); }
+  });
 });
 
 describe("account isolation and job state", () => {
@@ -131,26 +152,165 @@ describe("account isolation and job state", () => {
     nextRelease();
     expect(gateway.account(account.id).busy).toBe(false);
   });
-  test("rejects simultaneous work on one account while routing another account independently", async () => {
+  test("queues work for a busy account while routing another account independently", async () => {
     // Given two ready accounts and an event-controlled upstream.
     const first = Promise.withResolvers<RunResult>();
-    const { gateway } = fixture(async (_credentials, _prompt, context) =>
-      context.accountId === a.id ? first.promise : { text: "second result", remoteId: "second" });
+    const started = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const { gateway } = fixture(async (_credentials, prompt, context) => {
+      order.push(`start:${prompt}`);
+      if (context.accountId === a.id) { started.resolve(); return first.promise; }
+      return { text: "second result", remoteId: "second" };
+    });
     const a = gateway.create("dots", "First", {});
     const b = gateway.create("dots", "Second", {});
     await gateway.check(a.id); await gateway.check(b.id);
-    // When the first account remains in flight and provider routing handles another request.
+    // When the first account remains in flight and more work arrives.
     const jobA = gateway.submit({ accountId: a.id, prompt: "A" });
-    expect(() => gateway.submit({ accountId: a.id, prompt: "duplicate" })).toThrow(GatewayError);
+    await started.promise;
+    const jobA2 = gateway.submit({ accountId: a.id, prompt: "A2" });
     const jobB = gateway.submit({ provider: "dots", prompt: "B" });
-    const resultB = await gateway.wait(jobB.id);
+    // Then provider routing still uses the free account while the busy account holds the extra work as queued.
+    expect(jobB.accountId).toBe(b.id);
+    expect(jobA2.status).toBe("queued");
+    expect((await gateway.wait(jobB.id)).output).toBe("second result");
+    expect(gateway.account(a.id).busy).toBe(true);
     first.resolve({ text: "first result", remoteId: "first" });
     const resultA = await gateway.wait(jobA.id);
-    // Then results and account ownership stay distinct.
-    expect(jobB.accountId).toBe(b.id);
-    expect(resultB.output).toBe("second result");
+    const resultA2 = await gateway.wait(jobA2.id);
+    // Then both jobs of the busy account completed, in order.
     expect(resultA.output).toBe("first result");
+    expect(resultA2.output).toBe("first result");
+    expect(order).toEqual(["start:A", "start:B", "start:A2"]);
     expect(gateway.account(a.id).busy).toBe(false);
+  });
+  test("runs a queued job after the current one instead of refusing it", async () => {
+    // Given one account whose first job is held open by the upstream.
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const { gateway, store } = fixture(async (_credentials, prompt) => {
+      order.push(`start:${prompt}`);
+      if (prompt === "first") { started.resolve(); await gate.promise; }
+      order.push(`end:${prompt}`);
+      return { text: `result:${prompt}`, remoteId: `remote-${prompt}` };
+    });
+    const account = gateway.create("dots", "Serial", {});
+    await gateway.check(account.id);
+    const first = gateway.submit({ accountId: account.id, prompt: "first" });
+    await started.promise;
+    // When a second job arrives for the busy account.
+    const second = gateway.submit({ accountId: account.id, prompt: "second" });
+    // Then it is accepted as queued rather than rejected, and it has not started yet.
+    expect(second.status).toBe("queued");
+    expect(store.job(second.id)?.status).toBe("queued");
+    expect(order).toEqual(["start:first"]);
+    // When the first job finishes.
+    gate.resolve();
+    const queued = await gateway.wait(second.id);
+    // Then the queue drained in order and both jobs completed.
+    expect(queued.status).toBe("completed");
+    expect(queued.output).toBe("result:second");
+    expect(order).toEqual(["start:first", "end:first", "start:second", "end:second"]);
+    expect(store.job(first.id)?.status).toBe("completed");
+    expect(gateway.account(account.id).busy).toBe(false);
+  });
+  test("keeps a queued job marked running once its provider accepts it", async () => {
+    // Given a job queued behind one that is still running.
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    let secondId = jobIdSchema.parse(crypto.randomUUID());
+    let observed = "";
+    const { gateway, store } = fixture(async (_credentials, prompt, context) => {
+      if (prompt === "first") { started.resolve(); await gate.promise; return { text: "first", remoteId: "remote-first" }; }
+      context.onAccepted?.("remote-second");
+      observed = store.job(secondId)?.status ?? "missing";
+      return { text: "second", remoteId: "remote-second" };
+    });
+    const account = gateway.create("dots", "Accepted", {});
+    await gateway.check(account.id);
+    const first = gateway.submit({ accountId: account.id, prompt: "first" });
+    await started.promise;
+    const second = gateway.submit({ accountId: account.id, prompt: "second" });
+    secondId = second.id;
+    // When the queued job gets its turn and the provider accepts it.
+    gate.resolve();
+    const result = await gateway.wait(second.id);
+    // Then the record that provider event re-saves still reads running, and the job finishes normally.
+    expect(observed).toBe("running");
+    expect(result.status).toBe("completed");
+    expect(store.job(second.id)?.remoteId).toBe("remote-second");
+    expect(store.job(first.id)?.status).toBe("completed");
+  });
+  test("does not start queued work after the account has been quarantined", async () => {
+    // Given a provider whose running job fails with an unknown outcome and cannot re-verify itself.
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { gateway } = fixture(async () => {
+      started.resolve();
+      await gate.promise;
+      throw new GatewayError("timeout", "Accepted work timed out.", 504, true);
+    });
+    const account = gateway.create("dots", "Quarantined", {});
+    await gateway.check(account.id);
+    const first = gateway.submit({ accountId: account.id, prompt: "first" });
+    await started.promise;
+    const waiting = gateway.submit({ accountId: account.id, prompt: "second" });
+    // When the first job quarantines the account.
+    gate.resolve();
+    await gateway.wait(first.id);
+    const result = await gateway.wait(waiting.id);
+    // Then the queued job fails honestly without work being sent to the untrusted session.
+    expect(gateway.account(account.id).status).toBe("error");
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("not ready");
+    expect(result.remoteId).toBeNull();
+  });
+  test("refuses work beyond the queue limit and accepts it again once the queue drains", async () => {
+    // Given an account whose running job holds a queue at its limit.
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { gateway } = fixture(async (_credentials, prompt) => {
+      if (prompt === "running") { started.resolve(); await gate.promise; }
+      return { text: `result:${prompt}`, remoteId: `remote-${prompt}` };
+    });
+    const account = gateway.create("dots", "Full", {});
+    await gateway.check(account.id);
+    const running = gateway.submit({ accountId: account.id, prompt: "running" });
+    await started.promise;
+    const queued = Array.from({ length: 19 }, (_unused, index) => gateway.submit({ accountId: account.id, prompt: `queued-${index}` }));
+    expect(() => gateway.submit({ accountId: account.id, prompt: "overflow" })).toThrow(GatewayError);
+    // When the queue drains.
+    gate.resolve();
+    await Promise.all([running, ...queued].map((job) => gateway.wait(job.id)));
+    // Then the account takes work again.
+    const next = gateway.submit({ accountId: account.id, prompt: "after" });
+    expect(next.status).toBe("running");
+    expect((await gateway.wait(next.id)).status).toBe("completed");
+  });
+  test("leaves queued work unstarted when the gateway stops", async () => {
+    // Given a queued job whose turn comes only after a shutdown.
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { gateway, store } = fixture(async (_credentials, prompt) => {
+      if (prompt === "first") { started.resolve(); await gate.promise; }
+      return { text: `result:${prompt}`, remoteId: `remote-${prompt}` };
+    });
+    const account = gateway.create("dots", "Stopped", {});
+    await gateway.check(account.id);
+    const first = gateway.submit({ accountId: account.id, prompt: "first" });
+    await started.promise;
+    const waiting = gateway.submit({ accountId: account.id, prompt: "second" });
+    // When the gateway stops while the first job is still in flight.
+    gateway.stop();
+    gate.resolve();
+    await gateway.wait(first.id);
+    const result = await gateway.wait(waiting.id);
+    // Then the job that never got its turn fails without being sent, and the account stays usable.
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("stopped before this job started");
+    expect(store.job(waiting.id)?.status).toBe("failed");
+    expect(gateway.account(account.id).status).toBe("ready");
   });
   test("quarantines an account after an accepted job has an uncertain outcome", async () => {
     // Given an upstream which cannot confirm an accepted request.
