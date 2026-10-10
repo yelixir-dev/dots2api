@@ -392,6 +392,59 @@ test("run reports the upstream reason for an unrelated RPC rejection", async () 
   });
 });
 
+test("run reports Dot's own reason when a turn fails", async () => {
+  // Given a failing turn whose cause arrives as Dot's JSON error envelope.
+  await withServer((peer, request) => {
+    if (handshake(peer, request)) return;
+    if (request.method === "turn/start") {
+      peer.send(JSON.stringify({ method: "turn/completed", params: {
+        threadId: "dot-thread",
+        turn: {
+          id: "turn-1",
+          status: "failed",
+          items: [],
+          error: { message: JSON.stringify({ type: "error", error: {
+            message: "The combined resolved image content is too large. Reduce the number or size of input images.",
+            type: "invalid_request_error",
+            param: "input",
+            code: "image_request_too_large",
+          }, status: 400 }) },
+        },
+      } }));
+      reply(peer, request, { turn: { id: "turn-1", status: "failed" } });
+    }
+  }, async (credentials) => {
+    // When the turn runs.
+    await expect(dotsAdapter.run(credentials, "Hello Dot", context)).rejects.toMatchObject({
+      code: "dots_turn",
+      status: 502,
+      uncertain: false,
+      message: 'Dot turn finished without successful completion (status "failed"): image_request_too_large: '
+        + "The combined resolved image content is too large. Reduce the number or size of input images.",
+    });
+  });
+});
+
+test("run bounds a turn failure reason that is not an error envelope", async () => {
+  // Given a failing turn with prose of its own and no envelope to unwrap.
+  await withServer((peer, request) => {
+    if (handshake(peer, request)) return;
+    if (request.method === "turn/start") {
+      peer.send(JSON.stringify({ method: "turn/completed", params: {
+        threadId: "dot-thread",
+        turn: { id: "turn-1", status: "interrupted", items: [], error: { message: "x".repeat(400) } },
+      } }));
+      reply(peer, request, { turn: { id: "turn-1", status: "interrupted" } });
+    }
+  }, async (credentials) => {
+    // When the turn runs.
+    await expect(dotsAdapter.run(credentials, "Hello Dot", context)).rejects.toMatchObject({
+      code: "dots_turn",
+      message: `Dot turn finished without successful completion (status "interrupted"): ${"x".repeat(197)}...`,
+    });
+  });
+});
+
 test("run rebinds a Dot thread whose record survived without its agent", async () => {
   const methods: string[] = [];
   const saved: Credentials[] = [];
