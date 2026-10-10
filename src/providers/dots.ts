@@ -23,12 +23,16 @@ const createdThreadSchema = z.object({ thread: z.object({ id: z.string().min(1) 
 const turnSchema = z.object({
   turn: z.object({ id: z.string().min(1) }),
 });
+const turnErrorSchema = z.object({
+  message: z.string().optional(),
+}).nullish();
 const completedSchema = z.object({
   threadId: z.string(),
   turn: z.object({
     id: z.string(),
     status: z.string(),
     items: z.array(z.unknown()).optional(),
+    error: turnErrorSchema,
   }),
 });
 const messageSchema = z.object({
@@ -84,6 +88,27 @@ function config(credentials: Credentials): z.infer<typeof configurationSchema> {
     throw new GatewayError("dots_config", "Use a secure WebSocket endpoint (or loopback for local tests).");
   }
   return result.data;
+}
+
+/** Dot reports a failed turn's cause in turn.error.message as a JSON error envelope; keep it readable. */
+const turnEnvelopeSchema = z.object({ error: z.object({ code: z.string().optional(), message: z.string().optional() }).optional() });
+
+function turnFailureReason(error: z.infer<typeof turnErrorSchema>): string {
+  const raw = error?.message?.trim();
+  if (!raw) return "";
+  let reason = raw;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(raw);
+  } catch {
+    envelope = null; // Not an envelope: the message is already the reason.
+  }
+  const parsed = turnEnvelopeSchema.safeParse(envelope);
+  if (parsed.success && parsed.data.error) {
+    reason = [parsed.data.error.code, parsed.data.error.message ?? raw].filter(Boolean).join(": ");
+  }
+  const text = reason.replace(/\s+/g, " ").trim();
+  return text.length > 200 ? `${text.slice(0, 197)}...` : text;
 }
 
 /** Failures that mean the stored thread can no longer serve turns and must be replaced. */
@@ -284,7 +309,11 @@ export const dotsAdapter: ProviderAdapter = {
         const completed = completedSchema.safeParse(event.params);
         if (!completed.success || completed.data.threadId !== threadId || completed.data.turn.id !== turnId) continue;
         if (completed.data.turn.status !== "completed") {
-          throw new GatewayError("dots_turn", "Dot turn finished without successful completion.", 502);
+          const status = completed.data.turn.status;
+          const reason = turnFailureReason(completed.data.turn.error);
+          throw new GatewayError("dots_turn", reason
+            ? `Dot turn finished without successful completion (status "${status}"): ${reason}`
+            : `Dot turn finished without successful completion (status "${status}").`, 502);
         }
         for (const raw of completed.data.turn.items ?? []) {
           const delivery = deliveredMessageSchema.safeParse(raw);
