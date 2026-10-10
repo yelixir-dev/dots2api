@@ -225,6 +225,20 @@ async function startTurn(
 }
 
 /**
+ * Retires the thread a replacement takes over: without it every rotation leaves a dead one behind in the account's
+ * list. Only threads this gateway created are archived, since a thread the operator selected in the console is theirs.
+ */
+async function archiveReplacedThread(connection: DotConnection, credentials: Credentials): Promise<void> {
+  const replaced = credentials["threadId"];
+  if (credentials["threadOrigin"] !== "self" || !replaced) return;
+  try {
+    await connection.request("thread/archive", { threadId: replaced });
+  } catch {
+    // Housekeeping alone: a thread left behind is untidy, never a reason to fail a job that produced its answer.
+  }
+}
+
+/**
  * A reclaimed Dot thread keeps its record but loses its agent, so no turn can ever be accepted again.
  * Creating a replacement thread on the same credentials restores the account without a manual reconnect.
  */
@@ -237,6 +251,8 @@ async function provisionThread(
   if (!created.success) throw new GatewayError("dots_thread", "Dot did not create a replacement thread.", 502);
   const threadId = created.data.thread.id;
   save({ ...credentials, threadId, threadOrigin: "self", threadImageBytes: "0" });
+  // The replacement is durable before the thread it supersedes is archived, so this can never strand the account.
+  await archiveReplacedThread(connection, credentials);
   return threadId;
 }
 
