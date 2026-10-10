@@ -131,7 +131,18 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 - 요청: `prompt`(필수), `n`(1~4, 기본 1), `size`(`auto`, `1024x1024`, `1536x1024`, `1024x1536`), `quality`(`auto`, `low`, `medium`, `high`), `response_format`(`b64_json` 기본 / `url`). 그 밖의 필드는 400입니다.
 - 응답: OpenAI 형식의 `data[]`(`b64_json` 또는 `url`, Dot이 실제로 쓴 `revised_prompt`), `output_format: "png"`, 실제 `size`. `url`은 `GET /api/jobs/:id/images/0` 주소이며 **API 키가 필요**합니다.
 - 한 장에 약 1분이 걸리고, `n`장은 같은 Dot 스레드에서 한 장씩 차례로 만듭니다. 마지막까지 못 만들면 이미 만든 장은 돌려주고 `X-Dots2api-Images-Requested`와 `X-Dots2api-Images-Returned` 헤더로 알립니다.
-- 편집(`/v1/images/edits`)과 변형은 지원하지 않습니다.
+- 참조 이미지 편집은 `dots-image`와 multipart 업로드로 `POST /v1/images/edits`를 호출합니다:
+
+```bash
+curl -sS http://127.0.0.1:3010/v1/images/edits \
+  -H "Authorization: Bearer $DOTS2API_KEY" \
+  -F model=dots-image -F 'image=@reference.png' \
+  -F 'prompt=Keep the subject, replace the background with a beach' \
+  -F response_format=b64_json
+```
+
+- `image` 또는 `image[]`로 PNG/JPEG/WebP 1~8장을 전달하며 이미지 전체 합계는 32 MiB 이하입니다(multipart 본문 한도 33 MiB). 파일 시그니처로 형식을 판별합니다. 다른 옵션과 응답은 생성 API와 같습니다. 참조 이미지 바이트는 프롬프트 문자열이 아닌 별도 app-server 이미지 입력으로 전송하며 작업 기록에 저장하지 않습니다.
+- 마스크, 변형, JSON 이미지 URL, Muse 참조 이미지 업로드는 지원하지 않습니다. `muse-image` 편집은 작업 생성 전에 422를 반환합니다. Dot 이미지 입력 프로토콜은 로컬 WebSocket fixture로 검증했으며 실제 호스팅된 Dot의 참조 이미지 생성은 아직 검증하지 않았습니다.
 
 ### 작업 API
 

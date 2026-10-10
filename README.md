@@ -131,7 +131,18 @@ curl -sS http://127.0.0.1:3010/v1/images/generations \
 - Request: `prompt` (required), `n` (1–4, default 1), `size` (`auto`, `1024x1024`, `1536x1024`, `1024x1536`), `quality` (`auto`, `low`, `medium`, `high`), `response_format` (`b64_json` default, or `url`). Any other field returns 400.
 - Response: OpenAI-shaped `data[]` (`b64_json` or `url`, plus the `revised_prompt` the Dot actually used), `output_format: "png"` and the real `size`. A `url` points to `GET /api/jobs/:id/images/0` and **needs the API key**.
 - One image takes about a minute, and `n` images are made one after another in the same Dot thread. If the last ones fail, the finished images are returned and the `X-Dots2api-Images-Requested` and `X-Dots2api-Images-Returned` headers say how many.
-- Edits (`/v1/images/edits`) and variations are not supported.
+- Reference-image edits use `POST /v1/images/edits` with `dots-image` and multipart uploads:
+
+```bash
+curl -sS http://127.0.0.1:3010/v1/images/edits \
+  -H "Authorization: Bearer $DOTS2API_KEY" \
+  -F model=dots-image -F 'image=@reference.png' \
+  -F 'prompt=Keep the subject, replace the background with a beach' \
+  -F response_format=b64_json
+```
+
+- Supply 1–8 PNG/JPEG/WebP files as `image` or `image[]`, with at most 32 MiB of image bytes in total (33 MiB multipart body limit). File signatures determine the type. Other options and the response match generations. Reference bytes are sent as separate app-server image inputs, not prompt text, and are not stored in job history.
+- Masks, variations, JSON image URLs and Muse reference uploads are not supported. `muse-image` edits return 422 before creating a job. The Dot image-input protocol is covered by local WebSocket fixtures; live hosted Dot reference-image generation remains unverified.
 
 ### Jobs API
 

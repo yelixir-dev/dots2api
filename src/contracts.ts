@@ -39,6 +39,11 @@ export interface RunImage {
   readonly height?: number | undefined;
   readonly revisedPrompt?: string;
 }
+/** Validated reference bytes supplied by the caller, separate from prompt text and generated images. */
+export interface ReferenceImage {
+  readonly mime: JobImage["mime"];
+  readonly data: Uint8Array;
+}
 export interface Job {
   readonly id: JobId;
   readonly accountId: AccountId;
@@ -92,6 +97,7 @@ export interface AdapterContext {
   readonly accountId: AccountId;
   readonly dataDir: string;
   readonly signal: AbortSignal;
+  readonly referenceImages?: readonly ReferenceImage[];
   readonly onAccepted?: (remoteId: string | null) => void;
   /** Present when the caller can persist credentials an adapter repaired (for example a rebound thread). */
   readonly saveCredentials?: (credentials: Credentials) => void;

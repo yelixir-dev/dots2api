@@ -1,8 +1,28 @@
+import { GatewayError } from "./contracts";
+import type { ReferenceImage } from "./contracts";
+
 export const IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"] as const;
 export type ImageMime = (typeof IMAGE_MIMES)[number];
 export const IMAGE_EXTENSIONS: Readonly<Record<ImageMime, string>> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 export const MAX_IMAGES = 8;
 export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+
+/** Bound both individual files and the total reference payload, and trust signatures rather than MIME claims. */
+export function validateReferenceImages(images: readonly ReferenceImage[]): void {
+  if (images.length === 0 || images.length > MAX_IMAGES) {
+    throw new GatewayError("invalid_image", `Supply between 1 and ${MAX_IMAGES} reference images.`);
+  }
+  let bytes = 0;
+  for (const image of images) {
+    bytes += image.data.byteLength;
+    if (image.data.byteLength === 0 || bytes > MAX_IMAGE_BYTES) {
+      throw new GatewayError("image_too_large", "Reference images must be nonempty and total at most 32 MiB.", 413);
+    }
+    if (sniffImage(image.data) !== image.mime) {
+      throw new GatewayError("invalid_image", "Reference images must contain PNG, JPEG or WebP bytes.");
+    }
+  }
+}
 
 /** Identify a raster image by its signature. A remote claim about the type is never trusted. */
 export function sniffImage(bytes: Uint8Array): ImageMime | null {

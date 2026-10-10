@@ -1,5 +1,6 @@
 import { GatewayError, jobIdSchema } from "./contracts";
-import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId, ProviderStatus } from "./contracts";
+import type { Account, AccountId, Credentials, Job, JobId, ProviderAdapter, ProviderId, ProviderStatus, ReferenceImage } from "./contracts";
+import { validateReferenceImages } from "./images";
 import { Store } from "./store";
 import type { DotsAuth } from "./dots-auth";
 
@@ -141,7 +142,9 @@ export class Gateway {
       return null;
     }
   }
-  submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly prompt: string }): Job {
+  submit(input: { readonly accountId?: AccountId; readonly provider?: ProviderId; readonly prompt: string; readonly referenceImages?: readonly ReferenceImage[] }): Job {
+    if (input.referenceImages) validateReferenceImages(input.referenceImages);
+    const referenceImages = input.referenceImages?.map((image) => ({ mime: image.mime, data: new Uint8Array(image.data) }));
     const account = input.accountId
       ? this.account(input.accountId)
       : this.accounts()
@@ -161,7 +164,7 @@ export class Gateway {
     };
     this.store.saveAccount({ ...account, lastUsedAt: job.createdAt });
     this.store.saveJob(job);
-    const task = Promise.resolve().then(() => this.execute(job)).finally(release);
+    const task = Promise.resolve().then(() => this.execute(job, referenceImages)).finally(release);
     this.tasks.set(job.id, task);
     this.changed();
     return job;
@@ -173,13 +176,14 @@ export class Gateway {
     if (!job) throw new GatewayError("job_not_found", "Job not found.", 404);
     return job;
   }
-  private async execute(job: Job): Promise<Job> {
+  private async execute(job: Job, referenceImages?: readonly ReferenceImage[]): Promise<Job> {
     let remoteId: string | null = null;
     try {
       const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(300_000)]);
       const credentials = this.adapters[job.provider].validate(await this.credentials(job.accountId, signal));
       const result = await this.adapters[job.provider].run(credentials, job.prompt, {
         accountId: job.accountId, dataDir: this.store.dataDir, signal,
+        ...(referenceImages ? { referenceImages } : {}),
         saveCredentials: (repaired) => { this.store.saveAccount(this.account(job.accountId), repaired); },
         onAccepted: (id) => {
           remoteId = id;
