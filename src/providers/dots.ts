@@ -344,6 +344,8 @@ export const dotsAdapter: ProviderAdapter = {
       // The selected thread is a consumer Dot and keeps its identity gate; a replacement is trusted by creation.
       let threadId = settings.threadId;
       let rotated = false;
+      // Tracked per thread, not per account: a replacement starts empty and the stored count follows it.
+      let threadBytes = threadImageBytes(credentials);
       try {
         await existingThread(connection, threadId, credentials["threadOrigin"] === "self");
         const resumed = threadSchema.safeParse(await connection.request("thread/resume", { threadId }));
@@ -355,10 +357,12 @@ export const dotsAdapter: ProviderAdapter = {
         // duplicate remote work.
         if (!(error instanceof GatewayError) || !REBINDABLE.has(error.code) || !context.saveCredentials) throw error;
         threadId = await provisionThread(connection, context.saveCredentials, credentials);
+        threadBytes = 0;
         rotated = true;
       }
-      if (context.saveCredentials && !rotated && threadImageBytes(credentials) >= THREAD_IMAGE_BUDGET_BYTES) {
+      if (context.saveCredentials && !rotated && threadBytes >= THREAD_IMAGE_BUDGET_BYTES) {
         threadId = await provisionThread(connection, context.saveCredentials, credentials);
+        threadBytes = 0;
         rotated = true;
       }
       while (true) {
@@ -373,7 +377,8 @@ export const dotsAdapter: ProviderAdapter = {
           const produced = (result.images?.reduce((sum, image) => sum + image.data.length, 0) ?? 0)
             + (context.referenceImages?.reduce((sum, image) => sum + image.data.length, 0) ?? 0);
           if (produced && context.saveCredentials) {
-            context.saveCredentials({ ...credentials, threadId, threadImageBytes: String(threadImageBytes(credentials) + produced) });
+            threadBytes += produced;
+            context.saveCredentials({ ...credentials, threadId, threadImageBytes: String(threadBytes) });
           }
           return result;
         } catch (error) {
@@ -385,6 +390,7 @@ export const dotsAdapter: ProviderAdapter = {
           rotated = true;
           submission.clear();
           threadId = await provisionThread(connection, context.saveCredentials, credentials);
+          threadBytes = 0;
         }
       }
     });

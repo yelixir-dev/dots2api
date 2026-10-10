@@ -488,19 +488,20 @@ test("run replaces a thread that is already at Dot's image ceiling before submit
     // Then the prompt never reaches the thread that is over the limit.
     expect(request.params.threadId).toBe("fresh-thread");
     peer.send(JSON.stringify({ method: "turn/completed", params: {
-      threadId: "fresh-thread", turn: { id: "turn-1", status: "completed", items: [{ id: "answer", type: "agentMessage", text: "Fresh" }] },
+      threadId: "fresh-thread", turn: { id: "turn-1", status: "completed", items: [generated({ result: PNG_BASE64 })] },
     } }));
     reply(peer, request, { turn: { id: "turn-1", status: "inProgress" } });
   }, async (credentials) => {
     // When a prompt is sent to that account.
-    const result = await dotsAdapter.run({ ...credentials, threadImageBytes: "12582912" }, "Hello Dot", {
+    await dotsAdapter.run({ ...credentials, threadImageBytes: "12582912" }, "Hello Dot", {
       ...context, saveCredentials: (repaired) => { saved.push(repaired); },
     });
-    expect(result).toEqual({ text: "Fresh", remoteId: "turn-1" });
   });
-  // Then the replacement is created before submission and its counter starts empty.
+  // Then the replacement is created before submission and its counter counts only what the replacement carried.
   expect(methods).toEqual(["initialize", "initialized", "thread/read", "thread/resume", "thread/start", "turn/start"]);
   expect(saved[0]).toMatchObject({ threadId: "fresh-thread", threadOrigin: "self", threadImageBytes: "0" });
+  expect(saved).toHaveLength(2);
+  expect(saved[1]).toMatchObject({ threadId: "fresh-thread", threadImageBytes: String(Buffer.from(PNG_BASE64, "base64").length) });
 });
 
 test("run rotates the thread and retries when Dot refuses a text turn for its image content", async () => {
