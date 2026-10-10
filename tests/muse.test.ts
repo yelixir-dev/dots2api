@@ -8,6 +8,8 @@ import { createMuseAdapter } from "../src/providers/muse";
 const accountA = accountIdSchema.parse("11111111-1111-4111-8111-111111111111");
 const accountB = accountIdSchema.parse("22222222-2222-4222-8222-222222222222");
 const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64"));
+/** A different, valid PNG used as an uploaded reference, so returning it is distinguishable from the generated result. */
+const referencePng = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP8z8DwnwEJMCJzADxmBAHdI2kgAAAAAElFTkSuQmCC", "base64"));
 const html = `<!doctype html><html><body>
 <div role="button" aria-label="Message Send" data-hatch-composer-chrome="true" style="width:100%">
 <input type="file" multiple class="sr-only">
@@ -15,22 +17,41 @@ const html = `<!doctype html><html><body>
 <main role="log" aria-label="Chat messages"></main>
 <script>
   const input = document.querySelector("textarea");
-  const button = document.querySelector("button");
-  input.addEventListener("input", () => { button.disabled = !input.value; });
+  const button = document.querySelector('button[aria-label="Send"]');
+  const composer = document.querySelector('[data-hatch-composer-chrome="true"]');
+  // Like the live composer: an attachment alone enables Send, but not while any attachment is still uploading.
+  let uploading = 0;
+  const refresh = () => {
+    const attached = composer.querySelectorAll('img[src^="blob:"]').length;
+    button.disabled = (!input.value && attached === 0) || uploading > 0;
+  };
+  input.addEventListener("input", refresh);
   document.querySelector('input[type="file"]').addEventListener("change", async (event) => {
+    uploading += event.target.files.length; refresh();
     for (const file of event.target.files) {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const response = await fetch("/api/falco", {
+      const response = await fetch("/upload", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: file.name, b64: btoa(String.fromCharCode(...bytes)) }),
       });
-      if (!response.ok) return;
+      if (!response.ok) continue;
+      // The preview reuses the chat's attachment card, so only its place in the composer marks it as the user's own.
+      const card = document.createElement("div");
+      card.dataset.testid = "hatch-chat-attachment-presentation-composer";
       const preview = document.createElement("img");
       preview.src = URL.createObjectURL(file);
-      document.querySelector('[data-hatch-composer-chrome="true"]').appendChild(preview);
+      const remove = document.createElement("button");
+      remove.setAttribute("aria-label", "Remove attachment");
+      card.append(preview, remove);
+      composer.append(card);
+      uploading -= 1; refresh();
     }
   });
   button.addEventListener("click", () => {
+    // On send, the composer swaps each local blob: preview for the hosted copy, so its URL is not the one seen before.
+    composer.querySelectorAll('img[src^="blob:"]').forEach((preview, index) => {
+      queueMicrotask(() => { preview.src = "/media/reference.png?n=" + index; });
+    });
     fetch("/api/sent", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt: input.value, previews: document.querySelectorAll('[data-hatch-composer-chrome="true"] img[src^="blob:"]').length }),
@@ -72,7 +93,7 @@ describe("Muse browser adapter", () => {
   /** Records what the synthetic editor page uploaded and submitted, and lets one test refuse the upload. */
   const uploaded: { readonly name: string; readonly b64: string }[] = [];
   const sent: { readonly prompt: string; readonly previews: number }[] = [];
-  let falcoStatus = 200;
+  let uploadStatus = 200;
 
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "dots2api-muse-"));
@@ -84,11 +105,15 @@ describe("Muse browser adapter", () => {
           return Response.json({ status: request.headers.get("cookie")?.includes("hatch_sess=valid") ? "assigned" : "anonymous" });
         }
         if (path === "/media/result.png") return new Response(png, { headers: { "content-type": "image/png" } });
-        if (path === "/api/falco") {
-          if (falcoStatus !== 200) return new Response("no", { status: falcoStatus });
+        // The hosted copy of an uploaded reference; any job that returns these bytes returned the user's own upload.
+        if (path === "/media/reference.png") return new Response(referencePng, { headers: { "content-type": "image/png" } });
+        if (path === "/upload") {
+          if (uploadStatus !== 200) return new Response("no", { status: uploadStatus });
           uploaded.push(await request.json());
           return Response.json({ ok: true });
         }
+        // Telemetry answers 200 no matter what happens to an upload, so it must never count as an upload signal.
+        if (path === "/api/falco") return Response.json({ ok: true });
         if (path === "/api/sent") {
           sent.push(await request.json());
           return Response.json({ ok: true });
@@ -150,7 +175,7 @@ describe("Muse browser adapter", () => {
 
   it("uploads reference images through the composer before the prompt is sent", async () => {
     // Given a signed-in account and two reference images.
-    uploaded.length = 0; sent.length = 0; falcoStatus = 200;
+    uploaded.length = 0; sent.length = 0; uploadStatus = 200;
     const context = { accountId: accountA, dataDir, signal: new AbortController().signal };
     await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
     const references = [{ mime: "image/png" as const, data: png }, { mime: "image/png" as const, data: png }];
@@ -167,9 +192,23 @@ describe("Muse browser adapter", () => {
     expect(result.images).toBeUndefined();
   }, 90_000);
 
+  it("returns only the generated image of an edit, never the reference still shown in the composer", async () => {
+    // Given a signed-in account, a reference with its own bytes, and a turn that produces a new image.
+    uploaded.length = 0; sent.length = 0; uploadStatus = 200;
+    const context = { accountId: accountA, dataDir, signal: new AbortController().signal };
+    await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
+    // When the edit draws.
+    const result = await adapter.run({}, "draw it blue", { ...context, referenceImages: [{ mime: "image/png", data: referencePng }] });
+    // Then the one image returned is the generated result, not the uploaded reference.
+    expect(uploaded).toHaveLength(1);
+    expect(result.images).toHaveLength(1);
+    expect(Buffer.from(result.images?.[0]?.data ?? []).equals(Buffer.from(png))).toBe(true);
+    expect(Buffer.from(result.images?.[0]?.data ?? []).equals(Buffer.from(referencePng))).toBe(false);
+  }, 90_000);
+
   it("fails the job without sending when Muse rejects a reference upload", async () => {
-    // Given a signed-in account whose upload endpoint refuses the bytes.
-    uploaded.length = 0; sent.length = 0; falcoStatus = 500;
+    // Given a signed-in account whose upload endpoint refuses the bytes, while telemetry still answers 200.
+    uploaded.length = 0; sent.length = 0; uploadStatus = 500;
     const context = { accountId: accountA, dataDir, signal: new AbortController().signal };
     await adapter.check({ cookieHeader: "hatch_sess=valid" }, context);
     const references = [{ mime: "image/png" as const, data: png }, { mime: "image/png" as const, data: png }];
@@ -180,7 +219,7 @@ describe("Muse browser adapter", () => {
     expect(failure).toMatchObject({ code: "muse_attachment", status: 502, uncertain: false });
     expect(uploaded).toEqual([]);
     expect(sent).toEqual([]);
-    falcoStatus = 200;
+    uploadStatus = 200;
   }, 90_000);
 
   it("marks a lost acknowledgement after submission uncertain", async () => {

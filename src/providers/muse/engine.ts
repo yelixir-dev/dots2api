@@ -135,28 +135,29 @@ interface Attachment {
 }
 
 /**
- * Sends reference images through Muse's own composer. Two signals must both arrive before the prompt is sent: Muse's
- * upload response, which carries the bytes, and the composer preview that replaces the file with a local thumbnail. A
- * prompt sent in between is submitted as a text-only edit, so an unconfirmed upload fails the job instead.
+ * Sends reference images through Muse's own composer and waits until the composer itself reports them attached: one
+ * `blob:` thumbnail per reference, a Remove control for each, and an enabled Send button. A prompt sent before that is
+ * submitted as a text-only edit, so an attachment the composer never confirms fails the job before anything is sent.
+ *
+ * `/api/falco` is not used as the signal: in Muse's client bundle it is the batched telemetry logger (flushed every
+ * 1-10 s and switched off by VM policy), so its responses are neither tied to this upload nor guaranteed to appear.
  */
-async function attachReferences(page: Page, references: readonly ReferenceImage[], origin: URL): Promise<void> {
+async function attachReferences(page: Page, references: readonly ReferenceImage[], timeout: number): Promise<void> {
   const input = page.locator('input[type="file"]').first();
   await input.waitFor({ state: "attached", timeout: ATTACHMENT_TIMEOUT });
-  const acknowledged = page.waitForResponse(
-    (response) => response.url().startsWith(new URL("/api/falco", origin).href),
-    { timeout: REFERENCE_UPLOAD_TIMEOUT },
-  ).catch(() => null);
   await input.setInputFiles(references.map((image, index) => ({
     name: `reference-${index + 1}.${IMAGE_EXTENSIONS[image.mime]}`,
     mimeType: image.mime,
     buffer: Buffer.from(image.data),
   })));
-  const upload = await acknowledged;
-  if (!upload?.ok()) throw new GatewayError("muse_attachment", "Muse did not accept the reference image upload.", 502);
   await page.waitForFunction((expected: number) => {
     const composer = document.querySelector('[data-hatch-composer-chrome="true"]');
-    return !!composer && composer.querySelectorAll('img[src^="blob:"]').length >= expected;
-  }, references.length, { timeout: ATTACHMENT_TIMEOUT }).catch(() => {
+    if (!composer) return false;
+    const previews = composer.querySelectorAll('img[src^="blob:"]').length;
+    const removable = composer.querySelectorAll('[aria-label="Remove attachment"]').length;
+    const send = composer.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    return previews >= expected && removable >= expected && !!send && !send.disabled;
+  }, references.length, { timeout }).catch(() => {
     throw new GatewayError("muse_attachment", "Muse did not confirm the reference image attachment.", 502);
   });
 }
@@ -173,7 +174,8 @@ function attachmentsInPage(): Attachment[] {
   const addElement = (element: Element | null, tid: string): void => {
     if (!element || seenElement.has(element)) return;
     seenElement.add(element);
-    if (element.closest('form, [class*=chat-user-bubble], [class*="group/msg"]')) return;
+    // The live composer has no <form>; it is marked data-hatch-composer-chrome and holds the user's own uploads.
+    if (element.closest('form, [data-hatch-composer-chrome], [class*=chat-user-bubble], [class*="group/msg"]')) return;
     const video = element.querySelector("video") ?? (element.tagName === "VIDEO" ? element : null);
     const image = element.querySelector("img") ?? (element.tagName === "IMG" ? element : null);
     const isVideo = (tid || "").includes("video") || video !== null;
@@ -395,7 +397,8 @@ export function createMuseAdapter(site = "https://muse.ai", chatTimeout = CHAT_T
         }
         // The upload precedes the baseline on purpose: the reference attached here is an existing attachment by then, so
         // it can never be mistaken for the result of the edit.
-        if (references.length) await attachReferences(page, references, origin);
+        // An upload cannot outlast the chat it belongs to, which also keeps the bounded test adapters fast.
+        if (references.length) await attachReferences(page, references, Math.min(REFERENCE_UPLOAD_TIMEOUT, chatTimeout));
         // A generated image must be new, not a history attachment or the user's own upload.
         const baseline = new Set((await page.evaluate(attachmentsInPage)).flatMap((attachment) => [attachment.src, attachment.vSrc, attachment.iSrc]).filter(Boolean));
         const baselineAttachments = await page.locator('[data-testid^="hatch-chat-attachment-presentation-"]').count();
