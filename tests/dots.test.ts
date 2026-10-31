@@ -15,6 +15,8 @@ type Scenario = {
   later?: { afterReads: number; message: () => Message };
   onPost?: (body: Record<string, unknown>) => void;
   replies?: (posted: Message) => Message[];
+  /** Pads the thread/read response to this many bytes. */
+  readPadding?: number;
 };
 type Seen = { posts: Record<string, unknown>[]; reads: string[]; downloads: number; headers: Headers[]; uploads: File[] };
 
@@ -60,6 +62,19 @@ async function withDot<T>(scenario: Scenario, action: (credentials: Credentials,
         return Response.json({ file_id: `CalpicoFile_${seen.uploads.length}`, status: "UPLOADED" });
       }
       if (url.pathname === "/files/image.png") { seen.downloads++; return new Response(PNG); }
+      if (url.pathname === "/files/huge.png") {
+        seen.downloads++;
+        // Streamed without a length header, so only the running byte count can stop it.
+        let sent = 0;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent === 0) controller.enqueue(new Uint8Array(PNG));
+            else controller.enqueue(new Uint8Array(1024 * 1024));
+            sent++;
+            if (sent > 40) controller.close();
+          },
+        }));
+      }
       return new Response("not found", { status: 404 });
     },
     websocket: {
@@ -70,7 +85,7 @@ async function withDot<T>(scenario: Scenario, action: (credentials: Credentials,
           seen.reads.push(String(request.params["threadId"]));
           const type = statuses.length > 1 ? statuses.shift() : statuses[0];
           if (scenario.later && seen.reads.length === scenario.later.afterReads) history.push(scenario.later.message());
-          peer.send(JSON.stringify({ id: request.id, result: { thread: { id: request.params["threadId"], status: { type } } } }));
+          peer.send(JSON.stringify({ id: request.id, result: { thread: { id: request.params["threadId"], status: { type } }, padding: "x".repeat(scenario.readPadding ?? 0) } }));
         }
       },
     },
@@ -190,6 +205,26 @@ test("run downloads image attachments only from the API origin", async () => {
   });
 });
 
+test("run stops reading an attachment that exceeds the image budget and reports it", async () => {
+  // Given a reply whose attachment streams past the 32 MiB budget, followed by a normal image.
+  let origin = "";
+  await withDot({
+    replies: () => [reply("r1", "Two images", [
+      { type: "file", file: { mime_type: "image/png", download_url: `${origin}/files/huge.png` } },
+      { type: "file", file: { mime_type: "image/png", download_url: `${origin}/files/image.png` } },
+    ])],
+  }, async (credentials, seen) => {
+    origin = String(credentials["apiBase"]);
+    // When the prompt completes.
+    const result = await dotsAdapter.run(credentials, "draw", context);
+    // Then the oversized file is dropped and named in the text, while the job still returns the normal image.
+    expect(seen.downloads).toBe(2);
+    expect(result.images).toHaveLength(1);
+    expect(result.images?.[0]?.data.byteLength).toBe(PNG.byteLength);
+    expect(result.text).toContain("1 image(s) that could not be downloaded");
+  });
+});
+
 test("run reports uncertain when it is cancelled after the message was posted", async () => {
   // Given a Dot that never replies and a caller that gives up right after the message is accepted.
   const controller = new AbortController();
@@ -215,6 +250,12 @@ test("an account without an available Dot or with rejected credentials fails bef
     // Then authentication failures keep their status so the gateway asks for a reconnect.
     await expect(dotsAdapter.run(credentials, "Hello", context)).rejects.toMatchObject({ status: 401, uncertain: false });
     expect(seen.posts).toHaveLength(0);
+  });
+});
+
+test("an app-server frame over the 1 MiB budget fails the connection instead of being buffered", async () => {
+  await withDot({ readPadding: 1024 * 1024 }, async (credentials) => {
+    await expect(dotsAdapter.check(credentials, context)).rejects.toMatchObject({ code: "dots_resource_limit" });
   });
 });
 

@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { GatewayError } from "../../contracts";
 
+/** The app-server is only used for small RPCs (initialize, thread/read); no legitimate frame comes close. */
+export const MAX_DOT_FRAME_BYTES = 1024 * 1024;
+
 const responseSchema = z.object({
   id: z.number(),
   result: z.unknown().optional(),
@@ -10,25 +13,14 @@ const responseSchema = z.object({
     data: z.object({ grpcStatusCode: z.number().optional() }).optional(),
   }).optional(),
 });
-const notificationSchema = z.object({
-  method: z.string(),
-  params: z.unknown(),
-});
 
-export type Notification = z.infer<typeof notificationSchema>;
-
-/** One connection owns one job; notifications are buffered from before turn submission. */
+/** One connection owns one job's RPCs. Notifications are not used by any caller, so none are retained. */
 export class DotConnection {
   private nextId = 1;
   private readonly pending = new Map<number, {
     resolve(value: unknown): void;
     reject(error: GatewayError): void;
   }>();
-  private readonly notifications: Notification[] = [];
-  private waiting: {
-    resolve(value: Notification): void;
-    reject(error: GatewayError): void;
-  } | undefined;
   private closed: GatewayError | undefined;
   readonly ready: Promise<void>;
 
@@ -45,6 +37,10 @@ export class DotConnection {
     socket.addEventListener("message", (event: MessageEvent) => {
       if (typeof event.data !== "string") {
         this.fail(new GatewayError("dots_protocol", "Dot sent a non-text frame.", 502, uncertain()));
+        return;
+      }
+      if (Buffer.byteLength(event.data) > MAX_DOT_FRAME_BYTES) {
+        this.fail(new GatewayError("dots_resource_limit", "Dot sent a frame over the 1 MiB budget.", 502, uncertain()));
         return;
       }
       let parsed: unknown;
@@ -73,17 +69,6 @@ export class DotConnection {
         } else {
           pending.resolve(response.data.result);
         }
-        return;
-      }
-      const notification = notificationSchema.safeParse(parsed);
-      if (notification.success) {
-        const waiter = this.waiting;
-        if (waiter) {
-          this.waiting = undefined;
-          waiter.resolve(notification.data);
-        } else {
-          this.notifications.push(notification.data);
-        }
       }
     });
     socket.addEventListener("close", () => this.fail(this.failure()));
@@ -103,8 +88,6 @@ export class DotConnection {
     this.closed = error;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
-    this.waiting?.reject(error);
-    this.waiting = undefined;
     this.socket.close();
   }
 
@@ -125,15 +108,6 @@ export class DotConnection {
   notify(method: string, params: object): void {
     if (this.closed) throw this.closed;
     this.socket.send(JSON.stringify({ method, params }));
-  }
-
-  next(): Promise<Notification> {
-    const notification = this.notifications.shift();
-    if (notification) return Promise.resolve(notification);
-    if (this.closed) return Promise.reject(this.closed);
-    return new Promise<Notification>((resolve, reject) => {
-      this.waiting = { resolve, reject };
-    });
   }
 
   close(): void {

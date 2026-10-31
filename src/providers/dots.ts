@@ -185,10 +185,36 @@ async function repliesAfter(settings: Settings, roomId: string, sent: Message, s
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
+/** Reads a response body without ever holding more than `limit` bytes; null when it would exceed the limit. */
+async function boundedBody(response: Response, limit: number): Promise<Uint8Array | null> {
+  if (!response.body || Number(response.headers.get("content-length")) > limit) {
+    await response.body?.cancel();
+    return null;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > limit) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  return Buffer.concat(chunks, received);
+}
+
 async function downloadImages(settings: Settings, replies: readonly Message[], signal: AbortSignal): Promise<{ images: RunImage[]; missing: number }> {
   const origin = new URL(settings.apiBase ?? DEFAULT_API).origin;
   const images: RunImage[] = [];
   let missing = 0;
+  // One budget for the whole run, matching what the gateway retains, so many replies cannot add up past it.
+  let remaining = MAX_IMAGE_BYTES;
   for (const raw of replies.flatMap((message) => message.content.attachments ?? [])) {
     const attachment = fileAttachmentSchema.safeParse(raw);
     if (!attachment.success || !attachment.data.file.mime_type?.startsWith("image/")) continue;
@@ -197,10 +223,13 @@ async function downloadImages(settings: Settings, replies: readonly Message[], s
     if (!url || new URL(url, origin).origin !== origin || images.length >= MAX_IMAGES) { missing++; continue; }
     try {
       const response = await fetch(new URL(url, origin), { headers: headers(settings), signal });
-      const data = response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
+      if (!response.ok) await response.body?.cancel();
+      const data = response.ok ? await boundedBody(response, remaining) : null;
       const mime = data ? sniffImage(data) : null;
-      if (data && mime && data.byteLength <= MAX_IMAGE_BYTES) images.push({ mime, data });
-      else missing++;
+      if (data && mime) {
+        images.push({ mime, data });
+        remaining -= data.byteLength;
+      } else missing++;
     } catch {
       missing++;
     }
