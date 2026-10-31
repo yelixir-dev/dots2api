@@ -20,7 +20,8 @@ const request = z.strictObject({
   size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default("auto"),
   quality: z.enum(["auto", "low", "medium", "high"]).default("auto"),
   response_format: z.enum(["b64_json", "url"]).default("b64_json"),
-  output_format: z.literal("png").optional(),
+  // Accepted for any value so an explicit request reaches the 422 below instead of a generic 400.
+  output_format: z.unknown().optional(),
   background: z.enum(["auto", "opaque"]).optional(),
   moderation: z.literal("auto").optional(),
   user: z.string().optional(),
