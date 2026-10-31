@@ -9,12 +9,14 @@
   resubmitted; reference uploads before the post are the only safely repeatable step.
 - A job and an interactive login/check cannot own an account simultaneously. Login
   completion is single-flight through connection verification. Cancel/complete
-  conflicts return 409; old callbacks and sockets cannot affect a new generation.
+  conflicts return 409, and the refused request never releases the account lease;
+  only the transition that owns browser shutdown does; old callbacks and sockets cannot affect a new generation.
 - On Linux, Xvfb allocates an owned display through `-displayfd`, not an existence
   check on another process's socket. A private writable X11 socket directory is
   required; a read-only WSLg socket mount is not a suitable validation environment.
 - Shutdown stops admission, aborts/drains pending launches, finalizes accepted queues
-  and closes SQLite last. Restart recovery records unknown work and account
+  and closes SQLite last. One failed job does not end the drain early; every admitted
+  job settles first and the failures are reported afterwards. Restart recovery records unknown work and account
   quarantine in one transaction.
 
 ## Image results and JSON
@@ -45,8 +47,7 @@ guarantees.
 | Public generated-image list | 8 images |
 | Muse worker stdin / one stdout JSON line | 64 MiB |
 | Retained worker stderr suffix | 256 KiB |
-| Dots one inbound app-server frame | 1 MiB |
-| Dots queued / total app-server notification count | 256 / 4096 |
+| Dots one inbound app-server frame (notifications are not retained) | 1 MiB |
 | Worker graceful termination / final wait cutoff | 5 seconds / 10 seconds |
 | Worker diagnostic pipe cancellation cutoff | 2 seconds |
 | Media fetch / Xvfb readiness deadline | 30 seconds / 10 seconds |
