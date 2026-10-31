@@ -116,6 +116,49 @@ test("duplicate completion routes share verification and an old end cannot relea
   }
 });
 
+test("a completion that loses to an in-progress cancel keeps the lease until the browser is closed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dots2api-ownership-"));
+  const store = new Store(dir);
+  const closing = Promise.withResolvers<void>();
+  const finishClose = Promise.withResolvers<void>();
+  const adapter = (id: ProviderId): ProviderAdapter => ({
+    info: { id, name: id, description: "", setupUrl: "", fields: [], contextWindow: 1, contextBasis: "configured",
+      capabilities: { chat: false, nativeTools: false, usage: "unknown", execution: "remote-agent" } },
+    validate: (value) => value,
+    async check() { return { detail: "connected" }; },
+    async run() { return { text: "done", remoteId: null }; },
+  });
+  const gateway = new Gateway(store, { dots: adapter("dots"), muse: adapter("muse") });
+  const account = gateway.create("muse", "cancel race", {});
+  const service = createMuseLoginService({
+    dataDir: dir, onEnded: (session) => routes.handleEnded(session),
+    launcher: { async launch() { return browser(async () => { closing.resolve(); await finishClose.promise; }); } },
+  });
+  const routes = new MuseLoginRoutes(gateway, service);
+  const app = createApi(gateway, undefined, routes);
+  const post = (path: string, body: object = {}) => app.request(`http://localhost/api/accounts/${account.id}/muse-login/${path}`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${store.apiKey}` }, body: JSON.stringify(body),
+  });
+  try {
+    const id = String((await (await post("start")).json()).session.id);
+    // When cancellation is still closing the browser and a completion arrives for the same session.
+    const cancel = post("cancel", { sessionId: id });
+    await closing.promise;
+    const complete = await post("complete", { sessionId: id });
+    // Then the completion is refused and the account stays owned while the profile is still being closed.
+    expect(complete.status).toBe(409);
+    expect(gateway.account(account.id).busy).toBe(true);
+    finishClose.resolve();
+    expect((await cancel).status).toBe(200);
+    // And the cancellation, which owned shutdown, releases it once the browser is closed.
+    expect(gateway.account(account.id).busy).toBe(false);
+  } finally {
+    finishClose.resolve();
+    await service.close(); routes.close(); gateway.stop(); await gateway.drain();
+    store.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("viewer sockets close with their original session and new viewers keep working", async () => {
   const received = Promise.withResolvers<void>();
   let inputs = 0;

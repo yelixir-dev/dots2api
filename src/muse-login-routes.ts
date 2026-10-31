@@ -58,8 +58,10 @@ export class MuseLoginRoutes {
       const owner = this.leases.get(id);
       if (!owner || owner.sessionId !== sessionId) throw new GatewayError("muse_login_state", "No matching login lease is active.", 409);
       owner.completion ??= (async () => {
+        // A refusal here means another transition (cancel, expiry) owns the session's shutdown and will release the
+        // lease through handleEnded once the browser is closed; releasing it now would hand the profile to a job early.
+        await this.service.complete(id, sessionId);
         try {
-          await this.service.complete(id, sessionId);
           // A pasted cookie must never outlive the profile this login just authenticated.
           const current = this.gateway.account(id);
           this.gateway.store.saveAccount({ ...current, status: "unconnected" }, { login: "false" });
