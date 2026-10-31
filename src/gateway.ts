@@ -96,7 +96,13 @@ export class Gateway {
     const next = this.depth(id) - 1;
     if (next > 0) this.depths.set(id, next); else this.depths.delete(id);
   }
-  async drain(): Promise<void> { await Promise.all([...this.tasks.values(), ...this.leases]); }
+  /** Waits for every admitted task and lease to settle, so no work is still persisting when the caller closes the store. */
+  async drain(): Promise<void> {
+    const results = await Promise.allSettled([...this.tasks.values(), ...this.leases]);
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, `${failures.length} jobs failed while draining.`);
+  }
   accounts(): Account[] { return this.store.accounts().map((a) => ({ ...a, busy: this.busy.has(a.id) })); }
   /** Every registered provider with the operator's on/off switch applied. */
   providerStatuses(): ProviderStatus[] {

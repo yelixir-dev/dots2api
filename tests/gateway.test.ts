@@ -203,6 +203,37 @@ describe("account isolation and job state", () => {
     expect(gateway["queuedBytes"]).toBe(0);
   });
 
+  test("keeps draining the remaining jobs when one admitted job rejects", async () => {
+    // Given two accounts with running jobs, and a SQLite fault that makes the first job's completion write throw.
+    const startedA = Promise.withResolvers<void>();
+    const startedB = Promise.withResolvers<void>();
+    const finishA = Promise.withResolvers<void>();
+    const finishB = Promise.withResolvers<void>();
+    const { gateway, store } = fixture(async (_credentials, prompt) => {
+      if (prompt === "a") { startedA.resolve(); await finishA.promise; } else { startedB.resolve(); await finishB.promise; }
+      return { text: `done ${prompt}`, remoteId: null };
+    });
+    const a = gateway.create("dots", "A", {});
+    const b = gateway.create("dots", "B", {});
+    await gateway.check(a.id); await gateway.check(b.id);
+    const jobA = gateway.submit({ accountId: a.id, prompt: "a" });
+    const jobB = gateway.submit({ accountId: b.id, prompt: "b" });
+    await startedA.promise; await startedB.promise;
+    store.db.exec(`CREATE TEMP TRIGGER fail_a BEFORE UPDATE ON jobs WHEN OLD.id = '${jobA.id}' BEGIN SELECT RAISE(ABORT, 'save fault'); END`);
+    // When shutdown drains while job A fails to persist and job B is still running.
+    gateway.stop();
+    let settled = false;
+    const draining = gateway.drain().then(() => { settled = true; }, (error: unknown) => { settled = true; throw error; });
+    finishA.resolve();
+    await expect(gateway.wait(jobA.id)).rejects.toThrow("save fault");
+    // Then drain has not given up early: it still waits for job B.
+    expect(settled).toBe(false);
+    finishB.resolve();
+    await expect(draining).rejects.toThrow("save fault");
+    // And job B was persisted before drain returned, so closing the store afterwards loses nothing.
+    expect(store.job(jobB.id)?.status).toBe("completed");
+  });
+
   test("rolls back interrupted recovery if account quarantine cannot be persisted", async () => {
     // Given a running job and a SQLite fault at the quarantine write.
     const { gateway, store, dir } = fixture();
@@ -947,9 +978,12 @@ describe("account isolation and job state", () => {
       });
       await gateway.check(gateway.create("muse", "Format", {}).id);
       // When a client requires PNG rather than the actual provider encoding.
-      const response = await post(app, store.apiKey, { model: "muse-image", prompt: "p", output_format: "png" });
-      // Then the unsupported guarantee is rejected without consuming remote work.
-      expect(response.status).toBe(422);
+      for (const output_format of ["png", "jpeg", "webp"]) {
+        const response = await post(app, store.apiKey, { model: "muse-image", prompt: "p", output_format });
+        // Then every explicit encoding gets the documented 422, not a schema 400, without consuming remote work.
+        expect(response.status).toBe(422);
+        expect((await response.json()).error.code).toBe("unsupported_parameter");
+      }
       expect(runs).toBe(0);
       expect(store.jobs()).toHaveLength(0);
     });
